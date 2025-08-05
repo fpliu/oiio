@@ -1,3 +1,7 @@
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 #ifndef _WIN32
 #    include <unistd.h>
 #endif
@@ -32,7 +36,7 @@ using namespace OIIO;
 static const char* const EMPTY[] = { NULL };
 
 
-class TxReaderFormat : public ReaderFormat {
+class TxReaderFormat final : public ReaderFormat {
     int mipLevel_;
     int mipEnumIndex_;
     Knob* mipLevelKnob_;
@@ -92,7 +96,7 @@ public:
 };
 
 
-class txReader : public Reader {
+class txReader final : public Reader {
     std::unique_ptr<ImageInput> oiioInput_;
     TxReaderFormat* txFmt_;
 

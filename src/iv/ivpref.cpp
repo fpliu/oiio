@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #include <iostream>
@@ -27,6 +27,14 @@ IvPreferenceWindow::IvPreferenceWindow(ImageViewer& viewer)
 
     layout = new QVBoxLayout;
     layout->addWidget(viewer.pixelviewFollowsMouseBox);
+
+    QLayout* closeupPixelsLayout = new QHBoxLayout;
+    closeupPixelsLayout->addWidget(viewer.closeupPixelsLabel);
+    closeupPixelsLayout->addWidget(viewer.closeupPixelsBox);
+    closeupPixelsLayout->addWidget(viewer.closeupAvgPixelsLabel);
+    closeupPixelsLayout->addWidget(viewer.closeupAvgPixelsBox);
+    layout->addLayout(closeupPixelsLayout);
+
     layout->addWidget(viewer.linearInterpolationBox);
     layout->addWidget(viewer.darkPaletteBox);
     layout->addWidget(viewer.autoMipmap);

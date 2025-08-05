@@ -1,6 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# This script, which assumes it is runnign on a Mac OSX with Homebrew
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+# This script, which assumes it is running on a Mac OSX with Homebrew
 # installed, does a "brew install" in all packages reasonably needed by
 # OIIO.
 
@@ -16,46 +20,40 @@ if [[ `which brew` == "" ]] ; then
 fi
 
 
-brew update >/dev/null
+if [[ "${DO_BREW_UPDATE:=0}" != "0" ]] ; then
+    brew update >/dev/null
+fi
 echo ""
 echo "Before my brew installs:"
 brew list --versions
 
-if [[ "$BUILDTARGET" == "clang-format" ]] ; then
-    # If we are running for the sake of clang-format only, just install the
-    # bare minimum packages and return.
-    brew install --display-times ilmbase openexr llvm clang-format libtiff libpng boost ninja giflib
-    brew install --display-times python pybind11 && true
-    brew upgrade --display-times python && true
-    brew link --overwrite python
-    brew upgrade --display-times cmake && true
-else
-    # All cases except for clang-format target, we need the dependencies.
-    brew install --display-times gcc ccache cmake ninja boost && true
-    brew link --overwrite gcc
-    brew install --display-times python && true
-    brew upgrade --display-times python && true
-    brew link --overwrite python
-    brew upgrade --display-times cmake && true
-    brew install --display-times libtiff ilmbase openexr opencolorio
-    brew install --display-times libpng giflib webp jpeg-turbo openjpeg
-    brew install --display-times freetype libraw dcmtk pybind11 numpy
-    brew install --display-times ffmpeg libheif libsquish
-    brew install --display-times openvdb tbb
-    brew install --display-times opencv qt ptex
-    # N.B.: seems that Homebrew has removed field3d, allow failure
-    brew install --display-times field3d && true
+# All cases except for clang-format target, we need the dependencies.
+brew install --display-times -q gcc ccache cmake ninja || true
+brew link --overwrite gcc
+brew install --display-times -q python@${PYTHON_VERSION} || true
+brew unlink python@3.8 || true
+brew unlink python@3.9 || true
+brew unlink python@3.10 || true
+brew link --overwrite --force python@${PYTHON_VERSION} || true
+#brew upgrade --display-times -q cmake || true
+#brew install --display-times -q libtiff
+brew install --display-times -q imath openexr opencolorio
+#brew install --display-times -q libpng giflib webp
+brew install --display-times -q jpeg-turbo openjpeg libultrahdr
+brew install --display-times -q freetype libraw dcmtk pybind11 numpy || true
+brew install --display-times -q ffmpeg libheif ptex || true
+brew install --display-times -q tbb || true
+brew install --display-times -q openvdb || true
+brew install --display-times -q robin-map || true
+if [[ "${USE_OPENCV}" != "0" ]] && [[ "${INSTALL_OPENCV:=1}" != "0" ]] ; then
+    brew install --display-times -q opencv || true
 fi
-
-if [[ "$LINKSTATIC" == "1" ]] ; then
-    brew install --display-times little-cms2 tinyxml szip
-    brew install --display-times homebrew/dupes/bzip2
-    brew install --display-times yaml-cpp --with-static-lib
+if [[ "${USE_QT:=1}" != "0" ]] && [[ "${INSTALL_QT:=1}" != "0" ]] ; then
+    brew install --display-times -q qt${QT_VERSION}
 fi
-if [[ "$CLANG_TIDY" != "" ]] ; then
-    # If we are running for the sake of clang-tidy only, we will need
-    # a modern clang version not just the xcode one.
-    brew install --display-times llvm
+if [[ "${USE_LLVM:=0}" != "0" ]] || [[ "${LLVMBREWVER}" != "" ]]; then
+    brew install --display-times -q llvm${LLVMBREWVER}
+    export PATH=/usr/local/opt/llvm/bin:$PATH
 fi
 
 echo ""
@@ -63,16 +61,13 @@ echo "After brew installs:"
 brew list --versions
 
 # Needed on some systems
-pip install numpy
+pip${PYTHON_VERSION} install numpy
 
 # Set up paths. These will only affect the caller if this script is
 # run with 'source' rather than in a separate shell.
-export PATH=/usr/local/opt/qt5/bin:$PATH ;
-export PATH=/usr/local/opt/python/libexec/bin:$PATH ;
-export PYTHONPATH=/usr/local/lib/python${PYTHON_VERSION}/site-packages:$PYTHONPATH ;
-export PATH=/usr/local/Cellar/llvm/9.0.0*/bin:$PATH ;
+export PATH=/usr/local/opt/qt5/bin:$PATH
+export PATH=/usr/local/opt/python/libexec/bin:$PATH
+export PYTHONPATH=/usr/local/lib/python${PYTHON_VERSION}/site-packages:$PYTHONPATH
 
-# If field3d and hdf5 get even slightly out of sync, hdf5 will throw fits.
-# This is unnecessary, so we disable the step to make CI more likely to
-# pass in cases where they don't exactly match on the Travis/GH instances.
-export HDF5_DISABLE_VERSION_CHECK=1
+# Save the env for use by other stages
+src/build-scripts/save-env.bash

@@ -1,3 +1,8 @@
+..
+  Copyright Contributors to the OpenImageIO project.
+  SPDX-License-Identifier: CC-BY-4.0
+
+
 .. _chap-iinfo:
 
 Getting Image information With `iinfo`
@@ -137,6 +142,10 @@ subimages::
 .. describe:: --help
 
     Prints usage information to the terminal.
+
+.. option:: --version
+
+    Prints the version designation of the OIIO library.
 
 .. describe:: -v
 

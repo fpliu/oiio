@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #include <iostream>
@@ -24,7 +24,7 @@ using namespace OIIO;
 // value at the end.
 
 static int iterations = 2000000;
-static int numthreads = clamp((int)Sysutil::physical_concurrency(), 2, 16);
+static int numthreads = clamp((int)Sysutil::hardware_concurrency(), 2, 16);
 static int ntrials    = 5;
 static bool verbose   = false;
 static bool wedge     = false;
@@ -177,31 +177,24 @@ do_double_math(int iterations)
 static void
 getargs(int argc, char* argv[])
 {
-    bool help = false;
     ArgParse ap;
     // clang-format off
-    ap.options(
-        "atomic_test\n" OIIO_INTRO_STRING "\n"
-        "Usage:  atomic_test [options]",
-        // "%*", parse_files, "",
-        "--help", &help, "Print help message",
-        "-v", &verbose, "Verbose mode",
-        "--threads %d", &numthreads,
-            ustring::sprintf("Number of threads (default: %d)", numthreads).c_str(),
-        "--iters %d", &iterations,
-            ustring::sprintf("Number of iterations (default: %d)", iterations).c_str(),
-        "--trials %d", &ntrials, "Number of trials", "--wedge", &wedge, "Do a wedge test",
-        nullptr);
+    ap.intro("atomic_test\n" OIIO_INTRO_STRING)
+      .usage("atomic_test [options]");
+
+    ap.arg("-v", &verbose)
+      .help("Verbose mode");
+    ap.arg("--threads %d", &numthreads)
+      .help(Strutil::fmt::format("Number of threads (default: {})", numthreads));
+    ap.arg("--iters %d", &iterations)
+      .help(Strutil::fmt::format("Number of iterations (default: {})", iterations));
+    ap.arg("--trials %d", &ntrials)
+      .help("Number of trials");
+    ap.arg("--wedge", &wedge)
+      .help("Do a wedge test");
     // clang-format on
-    if (ap.parse(argc, (const char**)argv) < 0) {
-        std::cerr << ap.geterror() << std::endl;
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
-    if (help) {
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
+
+    ap.parse(argc, (const char**)argv);
 }
 
 

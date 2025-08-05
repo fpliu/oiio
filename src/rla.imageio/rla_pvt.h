@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #pragma once
 
@@ -8,7 +8,7 @@
 /*
   Brief documentation about the RLA format:
 
-  * The file consists of multiple subimages, merely contatenated together.
+  * The file consists of multiple subimages, merely concatenated together.
     Each subimage starts with a RLAHeader, and within the header is a
     NextOffset field that gives the absolute offset (relative to the start
     of the file) of the beginning of the next subimage, or 0 if there
@@ -48,6 +48,9 @@
 
   * RLA files are "big endian" for all 16 and 32 bit data: header fields,
     offsets, and pixel data.
+
+  * References:
+      - https://www.fileformat.info/format/wavefrontrla/egff.htm
 
  */
 
@@ -147,13 +150,24 @@ rla_type(TypeDesc t)
 
 
 
-/// Version of snprintf that is type safe and locale independent.
-template<typename... Args>
-inline int
-safe_snprintf(char* str, size_t size, const char* fmt, const Args&... args)
+// Formatted string into a fixed-length char array whose length we can't
+// exceed.
+template<size_t N, typename... Args>
+inline void
+safe_format_to(char (&str)[N], const char* fmt, const Args&... args)
 {
-    std::string s = Strutil::sprintf(fmt, args...);
-    return snprintf(str, size, "%s", s.c_str());
+    std::string s = Strutil::fmt::format(fmt, args...);
+    Strutil::safe_strcpy(str, s, N);
+}
+
+
+// Formatted string into an array whose length (passed) we can't exceed.
+template<typename... Args>
+inline void
+safe_format_to(char str[], size_t N, const char* fmt, const Args&... args)
+{
+    std::string s = Strutil::fmt::format(fmt, args...);
+    Strutil::safe_strcpy(str, s, N);
 }
 
 

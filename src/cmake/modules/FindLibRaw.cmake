@@ -75,6 +75,7 @@ FIND_PACKAGE_HANDLE_STANDARD_ARGS(LibRaw
                                   REQUIRED_VARS LibRaw_LIBRARIES LibRaw_r_LIBRARIES LibRaw_INCLUDE_DIR
                                   VERSION_VAR LibRaw_VERSION_STRING
                                  )
+set(LibRaw_VERSION ${LibRaw_VERSION_STRING})
 
 MARK_AS_ADVANCED(LibRaw_VERSION_STRING
                  LibRaw_INCLUDE_DIR
@@ -87,6 +88,15 @@ MARK_AS_ADVANCED(LibRaw_VERSION_STRING
 if (LINKSTATIC)
     # Necessary?
     find_package (Jasper)
+    if (JASPER_FOUND)
+        set (LibRaw_r_LIBRARIES ${LibRaw_r_LIBRARIES} ${JASPER_LIBRARIES})
+    endif()
     find_library (LCMS2_LIBRARIES NAMES lcms2)
-    set (LibRaw_r_LIBRARIES ${LibRaw_r_LIBRARIES} ${JASPER_LIBRARIES} ${LCMS2_LIBRARIES})
+    if (LCMS2_LIBRARIES)
+        set (LibRaw_r_LIBRARIES ${LibRaw_r_LIBRARIES} ${LCMS2_LIBRARIES})
+    endif()
+    if (MSVC)
+        set (LibRaw_r_DEFINITIONS ${LibRaw_r_DEFINITIONS} -D LIBRAW_NODLL)
+        set (LibRaw_DEFINITIONS ${LibRaw_DEFINITIONS} -D LIBRAW_NODLL)
+    endif()
 endif ()

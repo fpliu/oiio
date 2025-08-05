@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: BSD-3-Clause and Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 /*
   A few bits here are based upon code from NVIDIA that was also released
@@ -8,7 +8,7 @@
      Copyright 2004 NVIDIA Corporation. All Rights Reserved.
 
   Some parts of this file were first open-sourced in Open Shading Language,
-  also 3-Clause BSD licesne, then later moved here. The original copyright
+  also 3-Clause BSD license, then later moved here. The original copyright
   notice was:
      Copyright (c) 2009-2014 Sony Pictures Imageworks Inc., et al.
 
@@ -37,6 +37,7 @@
 #include <typeinfo>
 #include <type_traits>
 
+#include <OpenImageIO/bit.h>
 #include <OpenImageIO/span.h>
 #include <OpenImageIO/dassert.h>
 #include <OpenImageIO/oiioversion.h>
@@ -45,6 +46,15 @@
 
 
 OIIO_NAMESPACE_BEGIN
+
+/// If the caller defines OIIO_FMATH_HEADER_ONLY to nonzero, then 100% of the
+/// implementation of fmath functions will be defined directly in this header
+/// file.  If it is not defined, or set to 0, then there are a few functions
+/// for which this header will only provide the definition.
+#ifndef OIIO_FMATH_HEADER_ONLY
+#    define OIIO_FMATH_HEADER_ONLY 0
+#endif
+
 
 /// Occasionally there may be a tradeoff where the best/fastest
 /// implementation of a math function in an ordinary scalar context does
@@ -67,19 +77,6 @@ OIIO_NAMESPACE_BEGIN
 #ifndef OIIO_FMATH_SIMD_FRIENDLY
 #    define OIIO_FMATH_SIMD_FRIENDLY 0
 #endif
-
-
-// Helper template to let us tell if two types are the same.
-// C++11 defines this, keep in OIIO namespace for back compat.
-// DEPRECATED(2.0) -- clients should switch OIIO::is_same -> std::is_same.
-using std::is_same;
-
-
-// For back compatibility: expose these in the OIIO namespace.
-// DEPRECATED(2.0) -- clients should switch OIIO:: -> std:: for these.
-using std::isfinite;
-using std::isinf;
-using std::isnan;
 
 
 // Define math constants just in case they aren't included (Windows is a
@@ -135,7 +132,7 @@ using std::isnan;
 /// Quick test for whether an integer is a power of 2.
 ///
 template<typename T>
-inline OIIO_HOSTDEVICE OIIO_CONSTEXPR14 bool
+inline OIIO_HOSTDEVICE constexpr bool
 ispow2(T x) noexcept
 {
     // Numerous references for this bit trick are on the web.  The
@@ -148,7 +145,7 @@ ispow2(T x) noexcept
 
 /// Round up to next higher power of 2 (return x if it's already a power
 /// of 2).
-inline OIIO_HOSTDEVICE OIIO_CONSTEXPR14 int
+inline OIIO_HOSTDEVICE constexpr int
 ceil2(int x) noexcept
 {
     // Here's a version with no loops.
@@ -171,7 +168,7 @@ ceil2(int x) noexcept
 
 /// Round down to next lower power of 2 (return x if it's already a power
 /// of 2).
-inline OIIO_HOSTDEVICE OIIO_CONSTEXPR14 int
+inline OIIO_HOSTDEVICE constexpr int
 floor2(int x) noexcept
 {
     // Make all bits past the first 1 also be 1, i.e. 0001xxxx -> 00011111
@@ -186,18 +183,16 @@ floor2(int x) noexcept
 }
 
 
-// Old names -- DEPRECATED(2.1)
-inline OIIO_HOSTDEVICE int pow2roundup(int x) { return ceil2(x); }
-inline OIIO_HOSTDEVICE int pow2rounddown(int x) { return floor2(x); }
 
-
-
-/// Round value up to the next whole multiple.
-/// For example, round_to_multiple(7,10) returns 10.
+/// Round value up to the next whole multiple. For example,
+/// `round_to_multiple(10,10) == 10`, `round_to_multiple(17,10) == 20`, and
+/// `round_to_multiple(-17,10) == -10`.
 template <typename V, typename M>
 inline OIIO_HOSTDEVICE V round_to_multiple (V value, M multiple)
 {
-    return V (((value + V(multiple) - 1) / V(multiple)) * V(multiple));
+    if (value >= 0)
+        value += V(multiple) - 1;
+    return value - (value % V(multiple));
 }
 
 
@@ -212,6 +207,20 @@ round_to_multiple_of_pow2(T x, T m)
 {
     OIIO_DASSERT(ispow2(m));
     return (x + m - 1) & (~(m - 1));
+}
+
+
+
+/// Round `value` down to a whole multiple of `multiple`. For example,
+/// `round_down_to_multiple(10,10) == 10`,
+/// `round_down_to_multiple(17,10) == 10`, and
+/// `round_down_to_multiple(-17,10) == -20`.
+template <typename V, typename M>
+inline OIIO_HOSTDEVICE V round_down_to_multiple (V value, M multiple)
+{
+    if (value < 0)
+        value -= V(multiple - 1);
+    return value - (value % V(multiple));
 }
 
 
@@ -238,58 +247,6 @@ clamped_mult64(uint64_t a, uint64_t b)
         return std::numeric_limits<uint64_t>::max();
     else
         return ab;
-}
-
-
-
-/// Bitwise circular rotation left by `s` bits (for any unsigned integer
-/// type).  For info on the C++20 std::rotl(), see
-/// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p0553r4.html
-// FIXME: this should be constexpr, but we're leaving that out for now
-// because the Cuda specialization uses an intrinsic that isn't constexpr.
-// Come back to this later when more of the Cuda library is properly
-// constexpr.
-template<class T>
-OIIO_NODISCARD OIIO_FORCEINLINE OIIO_HOSTDEVICE
-// constexpr
-T rotl(T x, int s) noexcept
-{
-    static_assert(std::is_unsigned<T>::value && std::is_integral<T>::value,
-                  "rotl only works for unsigned integer types");
-    return (x << s) | (x >> ((sizeof(T) * 8) - s));
-}
-
-
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 320
-// Cuda has an intrinsic for 32 bit unsigned int rotation
-// FIXME: This should be constexpr, but __funnelshift_lc seems not to be
-// marked as such.
-template<>
-OIIO_NODISCARD OIIO_FORCEINLINE OIIO_HOSTDEVICE
-// constexpr
-uint32_t rotl(uint32_t x, int s) noexcept
-{
-    return __funnelshift_lc(x, x, s);
-}
-#endif
-
-
-
-// Old names -- DEPRECATED(2.1)
-OIIO_FORCEINLINE OIIO_HOSTDEVICE uint32_t
-rotl32(uint32_t x, int k)
-{
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 320
-    return __funnelshift_lc(x, x, k);
-#else
-    return (x << k) | (x >> (32 - k));
-#endif
-}
-
-OIIO_FORCEINLINE OIIO_HOSTDEVICE uint64_t
-rotl64(uint64_t x, int k)
-{
-    return (x << k) | (x >> (64 - k));
 }
 
 
@@ -323,10 +280,10 @@ clamp (const T& a, const T& low, const T& high)
 {
 #if 1
     // This looks clunky, but it generates minimal code. For float, it
-    // should result in just a max and min instruction, thats it.
+    // should result in just a max and min instruction, that's it.
     // This implementation is courtesy of Alex Wells, Intel, via OSL.
     T val = a;
-    if (!(low < val))  // Forces clamp(NaN,low,high) to return low
+    if (!(low <= val))  // Forces clamp(NaN,low,high) to return low
         val = low;
     if (val > high)
         val = high;
@@ -361,11 +318,30 @@ clamp (const simd::vfloat16& a, const simd::vfloat16& low, const simd::vfloat16&
 {
     return simd::min (high, simd::max (low, a));
 }
+
+// Specialization of clamp for vint4
+template<> OIIO_FORCEINLINE simd::vint4
+clamp (const simd::vint4& a, const simd::vint4& low, const simd::vint4& high)
+{
+    return simd::min (high, simd::max (low, a));
+}
+
+template<> OIIO_FORCEINLINE simd::vint8
+clamp (const simd::vint8& a, const simd::vint8& low, const simd::vint8& high)
+{
+    return simd::min (high, simd::max (low, a));
+}
+
+template<> OIIO_FORCEINLINE simd::vint16
+clamp (const simd::vint16& a, const simd::vint16& low, const simd::vint16& high)
+{
+    return simd::min (high, simd::max (low, a));
+}
 #endif
 
 
 
-// For the multply+add (or sub) operations below, note that the results may
+// For the multiply+add (or sub) operations below, note that the results may
 // differ slightly on different hardware, depending on whether true fused
 // multiply and add is available or if the code generated just does an old
 // fashioned multiply followed by a separate add. So please interpret these
@@ -692,9 +668,13 @@ sincos (double x, double* sine, double* cosine)
 }
 
 
-inline OIIO_HOSTDEVICE float sign (float x)
+
+/// Return -1 if x<0, 0 if x==0, 1 if x>0. For floating point types, this is
+/// not friendly to NaN inputs!
+template<typename T>
+inline OIIO_HOSTDEVICE T sign(T x)
 {
-    return x < 0.0f ? -1.0f : (x==0.0f ? 0.0f : 1.0f);
+    return x < T(0) ? T(-1) : (x == T(0) ? T(0) : T(1));
 }
 
 
@@ -713,80 +693,26 @@ inline OIIO_HOSTDEVICE float sign (float x)
 // Type and range conversion helper functions and classes.
 
 
-template <typename IN_TYPE, typename OUT_TYPE>
-OIIO_FORCEINLINE OIIO_HOSTDEVICE OUT_TYPE bit_cast (const IN_TYPE in) {
-    // NOTE: this is the only standards compliant way of doing this type of casting,
-    // luckily the compilers we care about know how to optimize away this idiom.
-    static_assert(sizeof(IN_TYPE) == sizeof(OUT_TYPE),
-                  "bit_cast must be between objects of the same size");
-    OUT_TYPE out;
-    memcpy ((void *)&out, &in, sizeof(IN_TYPE));
-    return out;
-}
-
-#if defined(__INTEL_COMPILER)
-    // On x86/x86_64 for certain compilers we can use Intel CPU intrinsics
-    // for some common bit_cast cases that might be even more understandable
-    // to the compiler and generate better code without its getting confused
-    // about the memcpy in the general case.
-    // FIXME: The intrinsics are not in clang <= 9 nor gcc <= 9.1. Check
-    // future releases.
-    template<> OIIO_FORCEINLINE uint32_t bit_cast<float, uint32_t> (const float val) {
-          return static_cast<uint32_t>(_castf32_u32(val));
-    }
-    template<> OIIO_FORCEINLINE int32_t bit_cast<float, int32_t> (const float val) {
-          return static_cast<int32_t>(_castf32_u32(val));
-    }
-    template<> OIIO_FORCEINLINE float bit_cast<uint32_t, float> (const uint32_t val) {
-          return _castu32_f32(val);
-    }
-    template<> OIIO_FORCEINLINE float bit_cast<int32_t, float> (const int32_t val) {
-          return _castu32_f32(val);
-    }
-    template<> OIIO_FORCEINLINE uint64_t bit_cast<double, uint64_t> (const double val) {
-          return static_cast<uint64_t>(_castf64_u64(val));
-    }
-    template<> OIIO_FORCEINLINE int64_t bit_cast<double, int64_t> (const double val) {
-          return static_cast<int64_t>(_castf64_u64(val));
-    }
-    template<> OIIO_FORCEINLINE double bit_cast<uint64_t, double> (const uint64_t val) {
-          return _castu64_f64(val);
-    }
-    template<> OIIO_FORCEINLINE double bit_cast<int64_t, double> (const int64_t val) {
-          return _castu64_f64(val);
-    }
-#endif
-
-
-OIIO_FORCEINLINE OIIO_HOSTDEVICE int bitcast_to_int (float x) {
-    return bit_cast<float,int>(x);
-}
-OIIO_FORCEINLINE OIIO_HOSTDEVICE float bitcast_to_float (int x) {
-    return bit_cast<int,float>(x);
-}
-
-
-
-/// Change endian-ness of one or more data items that are each 2, 4,
-/// or 8 bytes.  This should work for any of short, unsigned short, int,
-/// unsigned int, float, long long, pointers.
+/// Old name, raw pointer and length. Prefer the span-based byteswap.
 template<class T>
 inline OIIO_HOSTDEVICE void
-swap_endian (T *f, int len=1)
+swap_endian(T* vals, int len = 1)
 {
-    for (char *c = (char *) f;  len--;  c += sizeof(T)) {
-        if (sizeof(T) == 2) {
-            std::swap (c[0], c[1]);
-        } else if (sizeof(T) == 4) {
-            std::swap (c[0], c[3]);
-            std::swap (c[1], c[2]);
-        } else if (sizeof(T) == 8) {
-            std::swap (c[0], c[7]);
-            std::swap (c[1], c[6]);
-            std::swap (c[2], c[5]);
-            std::swap (c[3], c[4]);
-        }
-    }
+    for (int i = 0; i < len; ++i)
+        vals[i] = byteswap(vals[i]);
+}
+
+
+
+/// Byteswap a span of values.  This should work for any of short, unsigned
+/// short, int, unsigned int, float, long long, pointers. It's just calling
+/// byteswap on each element.
+template<typename T>
+inline OIIO_HOSTDEVICE void
+byteswap_span(span<T> vals)
+{
+    for (size_t i = 0, len = vals.size(); i < len; ++i)
+        vals[i] = byteswap(vals[i]);
 }
 
 
@@ -809,7 +735,7 @@ inline OIIO_HOSTDEVICE D
 scaled_conversion(const S& src, F scale, F min, F max)
 {
     if (std::numeric_limits<S>::is_signed) {
-        F s = src * scale;
+        F s = src * scale;  //NOSONAR
         s += (s < 0 ? (F)-0.5 : (F)0.5);
         return (D)clamp(s, min, max);
     } else {
@@ -831,7 +757,7 @@ scaled_conversion(const S& src, F scale, F min, F max)
 template<typename S, typename D>
 void convert_type (const S *src, D *dst, size_t n, D _min, D _max)
 {
-    if (std::is_same<S,D>::value) {
+    if constexpr (std::is_same<S,D>::value) {
         // They must be the same type.  Just memcpy.
         memcpy (dst, src, n*sizeof(D));
         return;
@@ -929,32 +855,6 @@ inline void convert_type<uint16_t,float> (const uint16_t *src,
 }
 
 
-#ifdef _HALF_H_
-template<>
-inline void convert_type<half,float> (const half *src,
-                                      float *dst, size_t n,
-                                      float /*_min*/, float /*_max*/)
-{
-#if OIIO_SIMD >= 8 && OIIO_F16C_ENABLED
-    // If f16c ops are enabled, it's worth doing this by 8's
-    for ( ; n >= 8; n -= 8, src += 8, dst += 8) {
-        simd::vfloat8 s_simd (src);
-        s_simd.store (dst);
-    }
-#endif
-#if OIIO_SIMD >= 4
-    for ( ; n >= 4; n -= 4, src += 4, dst += 4) {
-        simd::vfloat4 s_simd (src);
-        s_simd.store (dst);
-    }
-#endif
-    while (n--)
-        *dst++ = (*src++);
-}
-#endif
-
-
-
 template<>
 inline void
 convert_type<float,uint16_t> (const float *src, uint16_t *dst, size_t n,
@@ -997,9 +897,41 @@ convert_type<float,uint8_t> (const float *src, uint8_t *dst, size_t n,
 }
 
 
-#ifdef _HALF_H_
+#if defined(_HALF_H_) || defined(IMATH_HALF_H_)
 template<>
-inline void
+OIIO_UTIL_API
+void convert_type<half,float> (const half *src, float *dst, size_t n,
+                               float /*_min*/, float /*_max*/);
+template<>
+OIIO_UTIL_API
+void convert_type<float,half> (const float *src, half *dst, size_t n,
+                               half /*_min*/, half /*_max*/);
+
+#if OIIO_FMATH_HEADER_ONLY
+// Not just the declarations, give the definitions here.
+template<>
+void convert_type<half,float> (const half *src, float *dst, size_t n,
+                               float /*_min*/, float /*_max*/)
+{
+#if OIIO_SIMD >= 8 && OIIO_F16C_ENABLED
+    // If f16c ops are enabled, it's worth doing this by 8's
+    for ( ; n >= 8; n -= 8, src += 8, dst += 8) {
+        simd::vfloat8 s_simd (src);
+        s_simd.store (dst);
+    }
+#endif
+#if OIIO_SIMD >= 4
+    for ( ; n >= 4; n -= 4, src += 4, dst += 4) {
+        simd::vfloat4 s_simd (src);
+        s_simd.store (dst);
+    }
+#endif
+    while (n--)
+        *dst++ = (*src++);
+}
+
+template<>
+void
 convert_type<float,half> (const float *src, half *dst, size_t n,
                           half /*_min*/, half /*_max*/)
 {
@@ -1019,8 +951,10 @@ convert_type<float,half> (const float *src, half *dst, size_t n,
     while (n--)
         *dst++ = *src++;
 }
-#endif
-#endif
+#endif /* if OIIO_FMATH_HEADER_ONLY */
+#endif /* if defined(IMATH_HALF_H_) */
+
+#endif /* ifndef __CUDA_ARCH__ */
 
 
 
@@ -1034,6 +968,25 @@ inline void convert_type (const S *src, D *dst, size_t n)
 
 
 
+/// Copy (type convert) consecutive values from the cspan `src` holding data
+/// of type S into the span `dst` holding the same number of elements of data
+/// of type D.
+///
+/// The conversion is not a simple cast, but correctly remaps the 0.0->1.0
+/// range from and to the full positive range of integral types. It's just a
+/// straight copy if both types are identical. Optional arguments `min` and
+/// `max` can give nonstandard quantizations.
+template<typename S, typename D>
+void convert_type (cspan<S> src, span<D> dst,
+                   D min = std::numeric_limits<D>::min(),
+                   D max = std::numeric_limits<D>::min())
+{
+    OIIO_DASSERT(src.size() == dst.size());
+    convert_type(src.data(), dst.data(), std::min(src.size(), dst.size()),
+                 min, max);
+}
+
+
 
 /// Convert a single value from the type of S to the type of D.
 /// The conversion is not a simple cast, but correctly remaps the
@@ -1044,7 +997,7 @@ template<typename S, typename D>
 inline D
 convert_type (const S &src)
 {
-    if (std::is_same<S,D>::value) {
+    if constexpr (std::is_same<S,D>::value) {
         // They must be the same type.  Just return it.
         return (D)src;
     }
@@ -1079,6 +1032,7 @@ convert_type (const S &src)
 /// shifted fully to the right.
 template<unsigned int FROM_BITS, unsigned int TO_BITS>
 inline OIIO_HOSTDEVICE unsigned int bit_range_convert(unsigned int in) {
+    static_assert(FROM_BITS > 0, "FROM_BITS cannot be 0");
     unsigned int out = 0;
     int shift = TO_BITS - FROM_BITS;
     for (; shift > 0; shift -= FROM_BITS)
@@ -1094,17 +1048,19 @@ inline OIIO_HOSTDEVICE unsigned int
 bit_range_convert(unsigned int in, unsigned int FROM_BITS, unsigned int TO_BITS)
 {
     unsigned int out = 0;
-    int shift = TO_BITS - FROM_BITS;
-    for (; shift > 0; shift -= FROM_BITS)
-        out |= in << shift;
-    out |= in >> -shift;
+    if (FROM_BITS) {
+        int shift = TO_BITS - FROM_BITS;
+        for (; shift > 0; shift -= FROM_BITS)
+            out |= in << shift;
+        out |= in >> -shift;
+    }
     return out;
 }
 
 
 
-/// Append the `n` LSB bits of `val` into a bit sting `T out[]`, where the
-/// `filled` MSB bits of `*out` are already filled in. Incremennt `out` and
+/// Append the `n` LSB bits of `val` into a bit string `T out[]`, where the
+/// `filled` MSB bits of `*out` are already filled in. Increment `out` and
 /// adjust `filled` as required. Type `T` should be uint8_t, uint16_t, or
 /// uint32_t.
 template<typename T>
@@ -1177,18 +1133,20 @@ bit_pack(cspan<T> data, void* out, int outbits)
 /// will be stored in a successive out[i].
 template<typename T>
 inline void
-bit_unpack(int n, const unsigned char* in, int inbits, T* out)
+bit_unpack(cspan<unsigned char> in, int inbits, span<T> out)
 {
     static_assert(std::is_same<T,uint8_t>::value ||
                   std::is_same<T,uint16_t>::value ||
                   std::is_same<T,uint32_t>::value,
                   "bit_unpack must be unsigned int 8/16/32");
+    OIIO_DASSERT(in.size() * 8 >= inbits * out.size());
     OIIO_DASSERT(inbits >= 1 && inbits < 32);  // surely bugs if not
     // int highest = (1 << inbits) - 1;
+    size_t n = out.size();
     int B = 0, b = 0;
     // Invariant:
     // So far, we have used in[0..B-1] and the high b bits of in[B].
-    for (int i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         long long val = 0;
         int valbits   = 0;  // bits so far we've accumulated in val
         while (valbits < inbits) {
@@ -1219,6 +1177,23 @@ bit_unpack(int n, const unsigned char* in, int inbits, T* out)
         }
         out[i] = val; //T((val * 0xff) / highest);
     }
+}
+
+
+
+/// Decode n packed inbits-bits values from in[...] into normal uint8,
+/// uint16, or uint32 representation of `T out[0..n-1]`. In other words,
+/// each successive `inbits` of `in` (allowing spanning of byte boundaries)
+/// will be stored in a successive out[i].
+/// Note that this is the "unsafe" raw pointer version, and we recommend
+/// instead using the span-based version.
+template<typename T>
+OIIO_DEPRECATED("Use span-based version")
+inline void
+bit_unpack(int n, const unsigned char* in, int inbits, T* out)
+{
+    return bit_unpack(cspan<unsigned char>(in, (n * inbits + 7) / 8),
+                      inbits, span<T>(out, n));
 }
 
 
@@ -1520,7 +1495,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE int fast_rint (float x) {
     // single roundps instruction on SSE4.1+ (for gcc/clang at least)
     return static_cast<int>(std::rint(x));
 #else
-    // emulate rounding by adding/substracting 0.5
+    // emulate rounding by adding/subtracting 0.5
     return static_cast<int>(x + copysignf(0.5f, x));
 #endif
 }
@@ -1780,7 +1755,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_atan2 (float y, float x) {
     if (b_is_greater_than_a)
         r = 1.570796326794896557998982f - r; // account for arg reduction
     // TODO:  investigate if testing x < 0.0f is more efficient
-    if (bit_cast<float, unsigned>(x) & 0x80000000u) // test sign bit of x
+    if (bitcast<unsigned int, float>(x) & 0x80000000u) // test sign bit of x
         r = float(M_PI) - r;
     return copysignf(r, y);
 #else
@@ -1792,7 +1767,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_atan2 (float y, float x) {
 template<typename T>
 OIIO_FORCEINLINE OIIO_HOSTDEVICE T fast_log2 (const T& xval) {
     using namespace simd;
-    typedef typename T::int_t intN;
+    typedef typename T::vint_t intN;
     // See float fast_log2 for explanations
     T x = clamp (xval, T(std::numeric_limits<float>::min()), T(std::numeric_limits<float>::max()));
     intN bits = bitcast_to_int(x);
@@ -1816,9 +1791,9 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_log2 (const float& xval) {
     // NOTE: clamp to avoid special cases and make result "safe" from large negative values/nans
     float x = clamp (xval, std::numeric_limits<float>::min(), std::numeric_limits<float>::max());
     // based on https://github.com/LiraNuna/glsl-sse2/blob/master/source/vec4.h
-    unsigned bits = bit_cast<float, unsigned>(x);
+    unsigned int bits = bitcast<unsigned int, float>(x);
     int exponent = int(bits >> 23) - 127;
-    float f = bit_cast<unsigned, float>((bits & 0x007FFFFF) | 0x3f800000) - 1.0f;
+    float f = bitcast<float, unsigned int>((bits & 0x007FFFFF) | 0x3f800000) - 1.0f;
     // Examined 2130706432 values of log2 on [1.17549435e-38,3.40282347e+38]: 0.0797524457 avg ulp diff, 3713596 max ulp, 7.62939e-06 max error
     // ulp histogram:
     //  0  = 97.46%
@@ -1875,7 +1850,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_logb (float x) {
     x = fabsf(x);
     if (x < std::numeric_limits<float>::min()) x = std::numeric_limits<float>::min();
     if (x > std::numeric_limits<float>::max()) x = std::numeric_limits<float>::max();
-    unsigned bits = bit_cast<float, unsigned>(x);
+    unsigned int bits = bitcast<unsigned int, float>(x);
     return float (int(bits >> 23) - 127);
 #else
     return logbf(x);
@@ -1900,8 +1875,8 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_log1p (float x) {
 template<typename T>
 OIIO_FORCEINLINE OIIO_HOSTDEVICE T fast_exp2 (const T& xval) {
     using namespace simd;
-    typedef typename T::int_t intN;
-#if OIIO_SIMD_SSE
+    typedef typename T::vint_t intN;
+#if (OIIO_SIMD_SSE || OIIO_SIMD_NEON) && !OIIO_MSVS_BEFORE_2022
     // See float specialization for explanations
     T x = clamp (xval, T(-126.0f), T(126.0f));
     intN m (x); x -= T(m);
@@ -1918,7 +1893,19 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE T fast_exp2 (const T& xval) {
     r = madd(x, r, kD);
     r = madd(x, r, kE);
     r = madd(x, r, one);
-    return bitcast_to_float (bitcast_to_int(r) + (m << 23));
+
+    // Original code was:
+    //     return bitcast_to_float (bitcast_to_int(r) + (m << 23));
+    // This was producing the wrong results when called via `sRGB_to_linear()`
+    // and `linear_to_sRGB()` on some Windows MSVC builds.
+    // We found that it was fixed by using a temporary intN, as below.
+    // Presumed to be an optimizer bug in MSVC versions 16.11.x
+    // and earlier.
+    // See PR #3804
+
+    intN i = bitcast_to_int(r);
+    T f = bitcast_to_float(i + (m << 23));
+    return f;
 #else
     T r;
     for (int i = 0; i < r.elements; ++i)
@@ -1932,7 +1919,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE T fast_exp2 (const T& xval) {
 
 template<>
 OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_exp2 (const float& xval) {
-#if OIIO_NON_INTEL_CLANG && OIIO_FMATH_SIMD_FRIENDLY
+#if OIIO_ANY_CLANG && !OIIO_INTEL_LLVM_COMPILER && OIIO_FMATH_SIMD_FRIENDLY
     // Clang was unhappy using the bitcast/memcpy/reinter_cast/union inside
     // an explicit SIMD loop, so revert to calling the standard version.
     return std::exp2(xval);
@@ -1955,7 +1942,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_exp2 (const float& xval) {
     r = madd(x, r, 1.0f);
     // multiply by 2 ^ m by adding in the exponent
     // NOTE: left-shift of negative number is undefined behavior
-    return bit_cast<unsigned, float>(bit_cast<float, unsigned>(r) + (unsigned(m) << 23));
+    return bitcast<float, unsigned int>(bitcast<unsigned int, float>(r) + (unsigned(m) << 23));
     // Clang: loop not vectorized: unsafe dependent memory operations in loop.
     // This is why we special case the OIIO_FMATH_SIMD_FRIENDLY above.
     // FIXME: as clang releases continue to improve, periodically check if
@@ -2078,7 +2065,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_safe_pow (float x, float y) {
     if (OIIO_UNLIKELY(x < 0.0f)) {
         // if x is negative, only deal with integer powers
         // powf returns NaN for non-integers, we will return 0 instead
-        int ybits = bit_cast<float, int>(y) & 0x7fffffff;
+        int ybits = bitcast<int, float>(y) & 0x7fffffff;
         if (ybits >= 0x4b800000) {
             // always even int, keep positive
         } else if (ybits >= 0x3f800000) {
@@ -2086,7 +2073,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_safe_pow (float x, float y) {
             int k = (ybits >> 23) - 127;  // get exponent
             int j =  ybits >> (23 - k);   // shift out possible fractional bits
             if ((j << (23 - k)) == ybits) // rebuild number and check for a match
-                sign = bit_cast<int, float>(0x3f800000 | (j << 31)); // +1 for even, -1 for odd
+                sign = bitcast<float, int>(0x3f800000 | (j << 31)); // +1 for even, -1 for odd
             else
                 return 0.0f; // not integer
         } else {
@@ -2109,7 +2096,7 @@ OIIO_FORCEINLINE OIIO_HOSTDEVICE float fast_cbrt (float x) {
 #ifndef __CUDA_ARCH__
     float x0 = fabsf(x);
     // from hacker's delight
-    float a = bit_cast<int, float>(0x2a5137a0 + bit_cast<float, int>(x0) / 3); // Initial guess.
+    float a = bitcast<float, int>(0x2a5137a0 + bitcast<int, float>(x0) / 3); // Initial guess.
     // Examined 14272478 values of cbrt on [-9.99999935e-39,9.99999935e-39]: 8.14687e-14 max error
     // Examined 2131958802 values of cbrt on [9.99999935e-39,3.40282347e+38]: 2.46930719 avg ulp diff, 12 max ulp
     a = 0.333333333f * (2.0f * a + x0 / (a * a));  // Newton step.
@@ -2230,7 +2217,7 @@ T invert (Func &func, T y, T xmin=0.0, T xmax=1.0,
         *brack = bracketed;
     if (! bracketed) {
         // If our bounds don't bracket the zero, just give up, and
-        // return the approprate "edge" of the interval
+        // return the appropriate "edge" of the interval
         return ((y < vmin) == increasing) ? xmin : xmax;
     }
     if (fabs(v0-v1) < eps)   // already close enough
@@ -2268,7 +2255,7 @@ inline OIIO_HOSTDEVICE float
 interpolate_linear (float x, span_strided<const float> y)
 {
 #ifndef __CUDA_ARCH__
-    DASSERT_MSG (y.size() >= 2, "interpolate_linear needs at least 2 knot values (%zd)", y.size());
+    OIIO_DASSERT_MSG (y.size() >= 2, "interpolate_linear needs at least 2 knot values (has %d)", int(y.size()));
 #endif
     x = clamp (x, float(0.0), float(1.0));
     int nsegs = int(y.size()) - 1;

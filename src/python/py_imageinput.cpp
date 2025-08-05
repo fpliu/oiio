@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include "py_oiio.h"
 
@@ -114,25 +114,7 @@ ImageInput_read_tiles(ImageInput& self, int subimage, int miplevel, int xbegin,
 
 
 
-py::object
-ImageInput_read_native_deep_scanlines_old(ImageInput& self, int ybegin,
-                                          int yend, int z, int chbegin,
-                                          int chend)
-{
-    std::unique_ptr<DeepData> dd;
-    bool ok = true;
-    {
-        py::gil_scoped_release gil;
-        dd.reset(new DeepData);
-        ok = self.read_native_deep_scanlines(ybegin, yend, z, chbegin, chend,
-                                             *dd);
-    }
-    return ok ? py::cast(dd.release()) : py::none();
-}
-
-
-
-py::object
+std::unique_ptr<DeepData>
 ImageInput_read_native_deep_scanlines(ImageInput& self, int subimage,
                                       int miplevel, int ybegin, int yend, int z,
                                       int chbegin, int chend)
@@ -144,13 +126,15 @@ ImageInput_read_native_deep_scanlines(ImageInput& self, int subimage,
         dd.reset(new DeepData);
         ok = self.read_native_deep_scanlines(subimage, miplevel, ybegin, yend,
                                              z, chbegin, chend, *dd);
+        if (!ok)
+            dd.reset();
     }
-    return ok ? py::cast(dd.release()) : py::none();
+    return dd;
 }
 
 
 
-py::object
+std::unique_ptr<DeepData>
 ImageInput_read_native_deep_tiles(ImageInput& self, int subimage, int miplevel,
                                   int xbegin, int xend, int ybegin, int yend,
                                   int zbegin, int zend, int chbegin, int chend)
@@ -163,13 +147,15 @@ ImageInput_read_native_deep_tiles(ImageInput& self, int subimage, int miplevel,
         ok = self.read_native_deep_tiles(subimage, miplevel, xbegin, xend,
                                          ybegin, yend, zbegin, zend, chbegin,
                                          chend, *dd);
+        if (!ok)
+            dd.reset();
     }
-    return ok ? py::cast(dd.release()) : py::none();
+    return dd;
 }
 
 
 
-py::object
+std::unique_ptr<DeepData>
 ImageInput_read_native_deep_image(ImageInput& self, int subimage, int miplevel)
 {
     std::unique_ptr<DeepData> dd;
@@ -178,8 +164,10 @@ ImageInput_read_native_deep_image(ImageInput& self, int subimage, int miplevel)
         py::gil_scoped_release gil;
         dd.reset(new DeepData);
         ok = self.read_native_deep_image(subimage, miplevel, *dd);
+        if (!ok)
+            dd.reset();
     }
-    return ok ? py::cast(dd.release()) : py::none();
+    return dd;
 }
 
 
@@ -192,29 +180,28 @@ declare_imageinput(py::module& m)
     py::class_<ImageInput>(m, "ImageInput")
         .def_static(
             "create",
-            [](const std::string& filename,
-               const std::string& searchpath) -> py::object {
-                auto in = ImageInput::create(filename, searchpath);
-                return in ? py::cast(in.release()) : py::none();
+            [](const std::string& filename, const std::string& searchpath) {
+                return ImageInput::create(filename, false, nullptr, nullptr,
+                                          searchpath);
             },
             "filename"_a, "plugin_searchpath"_a = "")
         .def_static(
             "open",
-            [](const std::string& filename) -> py::object {
-                auto in = ImageInput::open(filename);
-                return in ? py::cast(in.release()) : py::none();
+            [](const std::string& filename) {
+                return ImageInput::open(filename);
             },
             "filename"_a)
         .def_static(
             "open",
-            [](const std::string& filename,
-               const ImageSpec& config) -> py::object {
-                auto in = ImageInput::open(filename, &config);
-                return in ? py::cast(in.release()) : py::none();
+            [](const std::string& filename, const ImageSpec& config) {
+                return ImageInput::open(filename, &config);
             },
             "filename"_a, "config"_a)
         .def("format_name", &ImageInput::format_name)
-        .def("valid_file", &ImageInput::valid_file)
+        .def("valid_file",
+             [](ImageInput& self, const std::string& filename) {
+                 return self.valid_file(filename);
+             })
         .def("spec", [](ImageInput& self) { return self.spec(); })
         .def(
             "spec",
@@ -249,6 +236,14 @@ declare_imageinput(py::module& m)
             },
             "subimage"_a, "miplevel"_a, "chbegin"_a, "chend"_a,
             "format"_a = TypeFloat)
+        .def(
+            "read_image",
+            [](ImageInput& self, int chbegin, int chend,
+               TypeDesc format) -> py::object {
+                return ImageInput_read_image(self, 0, 0, chbegin, chend,
+                                             format);
+            },
+            "chbegin"_a, "chend"_a, "format"_a = TypeFloat)
         .def(
             "read_image",
             [](ImageInput& self, TypeDesc format) -> py::object {
@@ -327,34 +322,26 @@ declare_imageinput(py::module& m)
         .def("read_native_deep_scanlines",
              &ImageInput_read_native_deep_scanlines, "subimage"_a, "miplevel"_a,
              "ybegin"_a, "yend"_a, "z"_a, "chbegin"_a, "chend"_a)
-        .def(
-            "read_native_deep_scanlines",  // DEPRECATED(1.9), keep for back compatibility
-            [](ImageInput& self, int ybegin, int yend, int z, int chbegin,
-               int chend) {
-                return ImageInput_read_native_deep_scanlines_old(self, ybegin,
-                                                                 yend, z,
-                                                                 chbegin,
-                                                                 chend);
-            },
-            "ybegin"_a, "yend"_a, "z"_a, "chbegin"_a, "chend"_a)
         .def("read_native_deep_tiles", &ImageInput_read_native_deep_tiles,
              "subimage"_a, "miplevel"_a, "xbegin"_a, "xend"_a, "ybegin"_a,
              "yend"_a, "zbegin"_a, "zend"_a, "chbegin"_a, "chend"_a)
-        .def(
-            "read_native_deep_tiles",  // DEPRECATED(1.9), keep for back compatibility
-            [](ImageInput& self, int xbegin, int xend, int ybegin, int yend,
-               int zbegin, int zend, int chbegin, int chend) {
-                return ImageInput_read_native_deep_tiles(self, 0, 0, xbegin,
-                                                         xend, ybegin, yend,
-                                                         zbegin, zend, chbegin,
-                                                         chend);
-            },
-            "xbegin"_a, "xend"_a, "ybegin"_a, "yend"_a, "zbegin"_a, "zend"_a,
-            "chbegin"_a, "chend"_a)
         .def("read_native_deep_image", &ImageInput_read_native_deep_image,
              "subimage"_a = 0, "miplevel"_a = 0)
-        .def("geterror",
-             [](ImageInput& self) { return PY_STR(self.geterror()); });
+        .def(
+            "get_thumbnail",
+            [](ImageInput& self, int subimage) {
+                ImageBuf buf;
+                self.get_thumbnail(buf, subimage);
+                return buf;
+            },
+            "subimage"_a = 0)
+        .def_property_readonly("has_error", &ImageInput::has_error)
+        .def(
+            "geterror",
+            [](ImageInput& self, bool clear) {
+                return PY_STR(self.geterror(clear));
+            },
+            "clear"_a = true);
 }
 
 }  // namespace PyOpenImageIO

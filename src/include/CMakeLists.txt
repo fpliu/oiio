@@ -1,16 +1,8 @@
-# Copyright 2008-present Contributors to the OpenImageIO project.
-# SPDX-License-Identifier: BSD-3-Clause
-# https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: BSD-3-Clause and Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 file (GLOB public_headers OpenImageIO/*.h)
-
-if (NOT USE_EXTERNAL_PUGIXML)
-    list (APPEND public_headers
-          OpenImageIO/pugixml.hpp
-          OpenImageIO/pugiconfig.hpp
-          OpenImageIO/pugixml.cpp)
-endif ()
-
 
 option (USE_GENERATED_EXPORT_HEADER "Use CMake-generated export header" OFF)
 if (USE_GENERATED_EXPORT_HEADER)
@@ -52,12 +44,68 @@ install (FILES ${public_headers}
          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}
          COMPONENT developer)
 
-set (fmt_headers
-        ${FMT_INCLUDES}/fmt/core.h
-        ${FMT_INCLUDES}/fmt/format-inl.h
-        ${FMT_INCLUDES}/fmt/format.h
-        ${FMT_INCLUDES}/fmt/ostream.h
-        ${FMT_INCLUDES}/fmt/printf.h )
-install (FILES ${fmt_headers}
-         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/fmt
+file (GLOB detail_headers OpenImageIO/detail/*.h)
+install (FILES ${detail_headers}
+         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/detail
          COMPONENT developer)
+
+if (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
+    set (fmt_headers_base_names)
+    foreach (header_name core.h format-inl.h format.h ostream.h printf.h
+             std.h base.h chrono.h)
+        if (EXISTS "${FMT_INCLUDE_DIR}/fmt/${header_name}")
+             list (APPEND fmt_headers_base_names ${header_name})
+        endif ()
+    endforeach ()
+    set (fmt_internal_directory ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt)
+    list (TRANSFORM fmt_headers_base_names
+          PREPEND ${FMT_INCLUDE_DIR}/fmt/
+          OUTPUT_VARIABLE fmt_headers)
+    list (TRANSFORM fmt_headers_base_names
+          PREPEND ${fmt_internal_directory}/
+          OUTPUT_VARIABLE fmt_headers_internal)
+    add_custom_command (OUTPUT ${fmt_internal_directory}
+                        COMMAND
+                            ${CMAKE_COMMAND} -E make_directory
+                            ${fmt_internal_directory})
+    add_custom_command (OUTPUT ${fmt_headers_internal}
+                        DEPENDS ${fmt_headers} ${fmt_internal_directory}
+                        COMMAND
+                            ${CMAKE_COMMAND} -E copy_if_different
+                            ${fmt_headers}
+                            ${fmt_internal_directory})
+    add_custom_target (fmt_internal_target DEPENDS ${fmt_headers_internal})
+else ()
+    set (fmt_headers
+         ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/format.h
+         ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/ostream.h
+         ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/printf.h )
+    foreach (f format.h ostream.h printf.h)
+        if (NOT EXISTS "${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/${f}")
+            file (WRITE "${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/${f}"
+                        "#include <fmt/${f}>")
+        endif ()
+    endforeach ()
+    if (fmt_VERSION VERSION_GREATER_EQUAL 9)
+        list (APPEND fmt_headers ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/std.h)
+        if (NOT EXISTS "${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/std.h")
+            file (WRITE "${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/fmt/std.h"
+                        "#include <fmt/std.h>")
+        endif ()
+    endif ()
+endif ()
+install (FILES ${fmt_headers}
+         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/detail/fmt
+         COMPONENT developer)
+
+if (NOT USE_EXTERNAL_PUGIXML)
+    set (pugixml_headers
+          OpenImageIO/detail/pugixml/pugixml.hpp
+          OpenImageIO/detail/pugixml/pugiconfig.hpp
+          OpenImageIO/detail/pugixml/pugixml.cpp)
+    file (COPY ${pugixml_headers}
+          DESTINATION ${CMAKE_BINARY_DIR}/include/OpenImageIO/detail/pugixml)
+    install (FILES ${pugixml_headers}
+             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/detail/pugixml
+             COMPONENT developer)
+endif ()

@@ -1,18 +1,17 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 /// \file
 /// Implementation of ImageBufAlgo algorithms that do math on
 /// single pixels at a time.
 
-#include <OpenEXR/half.h>
-
 #include <cmath>
 #include <iostream>
 #include <limits>
 
-#include <OpenImageIO/color.h>
+#include <OpenImageIO/half.h>
+
 #include <OpenImageIO/dassert.h>
 #include <OpenImageIO/deepdata.h>
 #include <OpenImageIO/imagebuf.h>
@@ -105,7 +104,7 @@ ImageBufAlgo::min(ImageBuf& dst, Image_or_Const A_, Image_or_Const B_, ROI roi,
         return ok;
     }
     // Remaining cases: error
-    dst.errorf("ImageBufAlgo::min(): at least one argument must be an image");
+    dst.errorfmt("ImageBufAlgo::min(): at least one argument must be an image");
     return false;
 }
 
@@ -117,7 +116,7 @@ ImageBufAlgo::min(Image_or_Const A, Image_or_Const B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = min(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::min() error");
+        result.errorfmt("ImageBufAlgo::min() error");
     return result;
 }
 
@@ -202,7 +201,7 @@ ImageBufAlgo::max(ImageBuf& dst, Image_or_Const A_, Image_or_Const B_, ROI roi,
         return ok;
     }
     // Remaining cases: error
-    dst.errorf("ImageBufAlgo::max(): at least one argument must be an image");
+    dst.errorfmt("ImageBufAlgo::max(): at least one argument must be an image");
     return false;
 }
 
@@ -214,7 +213,7 @@ ImageBufAlgo::max(Image_or_Const A, Image_or_Const B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = max(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::max() error");
+        result.errorfmt("ImageBufAlgo::max() error");
     return result;
 }
 
@@ -270,7 +269,7 @@ ImageBufAlgo::clamp(const ImageBuf& src, cspan<float> min, cspan<float> max,
     ImageBuf result;
     bool ok = clamp(result, src, min, max, clampalpha01, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::clamp error");
+        result.errorfmt("ImageBufAlgo::clamp error");
     return result;
 }
 
@@ -355,7 +354,7 @@ ImageBufAlgo::absdiff(ImageBuf& dst, Image_or_Const A_, Image_or_Const B_,
         return ok;
     }
     // Remaining cases: error
-    dst.errorf(
+    dst.errorfmt(
         "ImageBufAlgo::absdiff(): at least one argument must be an image");
     return false;
 }
@@ -368,7 +367,7 @@ ImageBufAlgo::absdiff(Image_or_Const A, Image_or_Const B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = absdiff(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::absdiff() error");
+        result.errorfmt("ImageBufAlgo::absdiff() error");
     return result;
 }
 
@@ -389,7 +388,7 @@ ImageBufAlgo::abs(const ImageBuf& A, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = abs(result, A, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("abs error");
+        result.errorfmt("abs error");
     return result;
 }
 
@@ -430,7 +429,72 @@ ImageBufAlgo::pow(const ImageBuf& A, cspan<float> b, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = pow(result, A, b, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("pow error");
+        result.errorfmt("pow error");
+    return result;
+}
+
+template<class Rtype>
+static bool
+normalize_impl(ImageBuf& R, const ImageBuf& A, float inCenter, float outCenter,
+               float scale, ROI roi, int nthreads)
+{
+    ImageBufAlgo::parallel_image(roi, nthreads, [&](ROI roi) {
+        ImageBuf::ConstIterator<Rtype> a(A, roi);
+        for (ImageBuf::Iterator<Rtype> r(R, roi); !r.done(); ++r, ++a) {
+            float x = a[0] - inCenter;
+            float y = a[1] - inCenter;
+            float z = a[2] - inCenter;
+
+            float length = std::sqrt(x * x + y * y + z * z);
+
+            float s = (length > 0.0f) ? scale / length : 0.0f;
+
+            r[0] = x * s + outCenter;
+            r[1] = y * s + outCenter;
+            r[2] = z * s + outCenter;
+
+            if (R.spec().nchannels == 4) {
+                r[3] = a[3];
+            }
+        }
+    });
+    return true;
+}
+
+bool
+ImageBufAlgo::normalize(ImageBuf& dst, const ImageBuf& src, float inCenter,
+                        float outCenter, float scale, ROI roi, int nthreads)
+{
+    if (!ImageBufAlgo::IBAprep(roi, &dst, &src))
+        return false;
+
+    if (src.spec().nchannels != 3 && src.spec().nchannels != 4) {
+        src.errorfmt("normalize can only handle 3- or 4-channel images");
+        return false;
+    }
+    if (src.spec().nchannels < dst.spec().nchannels) {
+        dst.errorfmt(
+            "destination buffer can`t have more channels than the source");
+        return false;
+    }
+
+    bool ok;
+    OIIO_DISPATCH_COMMON_TYPES(ok, "normalize", normalize_impl,
+                               dst.spec().format, dst, src, inCenter, outCenter,
+                               scale, roi, nthreads);
+
+    return ok;
+}
+
+ImageBuf
+ImageBufAlgo::normalize(const ImageBuf& A, float inCenter, float outCenter,
+                        float scale, ROI roi, int nthreads)
+{
+    ImageBuf result;
+    bool ok = ImageBufAlgo::normalize(result, A, inCenter, outCenter, scale,
+                                      roi, nthreads);
+    if (!ok && !result.has_error())
+        result.errorfmt("normalize error");
     return result;
 }
 
@@ -487,7 +551,7 @@ ImageBufAlgo::channel_sum(const ImageBuf& src, cspan<float> weights, ROI roi,
     ImageBuf result;
     bool ok = channel_sum(result, src, weights, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("channel_sum error");
+        result.errorfmt("channel_sum error");
     return result;
 }
 
@@ -713,7 +777,7 @@ ImageBufAlgo::rangecompress(const ImageBuf& src, bool useluma, ROI roi,
     ImageBuf result;
     bool ok = rangecompress(result, src, useluma, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::rangecompress() error");
+        result.errorfmt("ImageBufAlgo::rangecompress() error");
     return result;
 }
 
@@ -726,7 +790,7 @@ ImageBufAlgo::rangeexpand(const ImageBuf& src, bool useluma, ROI roi,
     ImageBuf result;
     bool ok = rangeexpand(result, src, useluma, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::rangeexpand() error");
+        result.errorfmt("ImageBufAlgo::rangeexpand() error");
     return result;
 }
 
@@ -803,7 +867,7 @@ ImageBufAlgo::unpremult(const ImageBuf& src, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = unpremult(result, src, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::unpremult() error");
+        result.errorfmt("ImageBufAlgo::unpremult() error");
     return result;
 }
 
@@ -879,7 +943,7 @@ ImageBufAlgo::premult(const ImageBuf& src, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = premult(result, src, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::premult() error");
+        result.errorfmt("ImageBufAlgo::premult() error");
     return result;
 }
 
@@ -915,7 +979,7 @@ ImageBufAlgo::repremult(const ImageBuf& src, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = repremult(result, src, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::repremult() error");
+        result.errorfmt("ImageBufAlgo::repremult() error");
     return result;
 }
 
@@ -962,6 +1026,8 @@ contrast_remap_(ImageBuf& dst, const ImageBuf& src, cspan<float> black,
         // First do the linear stretch
         float* r = OIIO_ALLOCA(float, roi.chend);  // temp result
         ImageBuf::ConstIterator<S> s(src, roi);
+        float* y     = OIIO_ALLOCA(float, roi.chend);
+        float* denom = OIIO_ALLOCA(float, roi.chend);
         for (ImageBuf::Iterator<D> d(dst, roi); !d.done(); ++d, ++s) {
             for (int c = roi.chbegin; c < roi.chend; ++c)
                 r[c] = (s[c] - black[c]) * bwdiffinv[c];
@@ -972,8 +1038,6 @@ contrast_remap_(ImageBuf& dst, const ImageBuf& src, cspan<float> black,
             if (use_sigmoid) {
                 // Sorry about the lack of clarity, we're working hard to
                 // minimize computation.
-                float* y     = OIIO_ALLOCA(float, roi.chend);
-                float* denom = OIIO_ALLOCA(float, roi.chend);
                 for (int c = roi.chbegin; c < roi.chend; ++c) {
                     y[c]     = 1.0f / (1.0f + expf(scontrast[c] * sthresh[c]));
                     denom[c] = 1.0f
@@ -1043,7 +1107,93 @@ ImageBufAlgo::contrast_remap(const ImageBuf& src, cspan<float> black,
     bool ok = contrast_remap(result, src, black, white, min, max, scontrast,
                              sthresh, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::contrast_remap error");
+        result.errorfmt("ImageBufAlgo::contrast_remap error");
+    return result;
+}
+
+
+
+template<class Rtype, class Atype>
+static bool
+saturate_(ImageBuf& R, const ImageBuf& A, float scale, int firstchannel,
+          ROI roi, int nthreads)
+{
+    ImageBufAlgo::parallel_image(roi, nthreads, [&](ROI roi) {
+        // Gross simplification: assume linear sRGB primaries. Ick -- but
+        // what else to do if we don't really know the color space or its
+        // characteristics?
+        // FIXME: come back to this.
+        const simd::vfloat3 weights(0.2126f, 0.7152f, 0.0722f);
+        ImageBuf::ConstIterator<Atype> a(A, roi);
+        for (ImageBuf::Iterator<Rtype> r(R, roi); !r.done(); ++r, ++a) {
+            for (int c = roi.chbegin; c < firstchannel; ++c)
+                r[c] = a[c];
+            simd::vfloat3 rgb(a[firstchannel], a[firstchannel + 1],
+                              a[firstchannel + 2]);
+            simd::vfloat3 luma  = simd::vdot(rgb, weights);
+            rgb                 = lerp(luma, rgb, scale);
+            r[firstchannel]     = rgb[0];
+            r[firstchannel + 1] = rgb[1];
+            r[firstchannel + 2] = rgb[2];
+            for (int c = firstchannel + 3; c < roi.chend; ++c)
+                r[c] = a[c];
+        }
+    });
+    return true;
+}
+
+
+
+bool
+ImageBufAlgo::saturate(ImageBuf& dst, const ImageBuf& src, float scale,
+                       int firstchannel, ROI roi, int nthreads)
+{
+    pvt::LoggedTimer logtime("IBA::saturate");
+    if (!IBAprep(roi, &dst, &src, IBAprep_CLAMP_MUTUAL_NCHANNELS))
+        return false;
+
+    // Some basic error checking on whether the channel set makes sense
+    int alpha_channel = src.spec().alpha_channel;
+    int z_channel     = src.spec().z_channel;
+    if (roi.chend - firstchannel < 3) {
+        dst.errorfmt(
+            "ImageBufAlgo::saturate can only work on 3 channels at a time. "
+            "You specified starting at channel {} of a {}-channel ROI, that's not enough.",
+            firstchannel, roi.nchannels());
+        return false;
+    }
+    if (alpha_channel >= firstchannel && alpha_channel < firstchannel + 3) {
+        dst.errorfmt(
+            "ImageBufAlgo::saturate cannot operate alpha channels "
+            "and you asked saturate to operate on channels {}-{}. Alpha is channel {}.",
+            firstchannel, firstchannel + 2, alpha_channel);
+        return false;
+    }
+    if (z_channel >= firstchannel && z_channel < firstchannel + 3) {
+        dst.errorfmt(
+            "ImageBufAlgo::saturate cannot operate z channels "
+            "and you asked saturate to operate on channels {}-{}. Z is channel {}.",
+            firstchannel, firstchannel + 2, z_channel);
+        return false;
+    }
+
+    bool ok = true;
+    OIIO_DISPATCH_COMMON_TYPES2(ok, "saturate", saturate_, dst.spec().format,
+                                src.spec().format, dst, src, scale,
+                                firstchannel, roi, nthreads);
+    return ok;
+}
+
+
+
+ImageBuf
+ImageBufAlgo::saturate(const ImageBuf& src, float scale, int firstchannel,
+                       ROI roi, int nthreads)
+{
+    ImageBuf result;
+    bool ok = saturate(result, src, scale, firstchannel, roi, nthreads);
+    if (!ok && !result.has_error())
+        result.errorfmt("ImageBufAlgo::saturate() error");
     return result;
 }
 
@@ -1082,11 +1232,11 @@ ImageBufAlgo::color_map(ImageBuf& dst, const ImageBuf& src, int srcchannel,
 {
     pvt::LoggedTimer logtime("IBA::color_map");
     if (srcchannel >= src.nchannels()) {
-        dst.errorf("invalid source channel selected");
+        dst.errorfmt("invalid source channel selected");
         return false;
     }
-    if (nknots < 2 || knots.size() < (nknots * channels)) {
-        dst.errorf("not enough knot values supplied");
+    if (nknots < 2 || std::ssize(knots) < (nknots * channels)) {
+        dst.errorfmt("not enough knot values supplied");
         return false;
     }
     if (!roi.defined())
@@ -1116,7 +1266,7 @@ ImageBufAlgo::color_map(const ImageBuf& src, int srcchannel, int nknots,
     bool ok = color_map(result, src, srcchannel, nknots, channels, knots, roi,
                         nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::color_map() error");
+        result.errorfmt("ImageBufAlgo::color_map() error");
     return result;
 }
 
@@ -1210,7 +1360,7 @@ ImageBufAlgo::color_map(ImageBuf& dst, const ImageBuf& src, int srcchannel,
 {
     pvt::LoggedTimer logtime("IBA::color_map");
     if (srcchannel >= src.nchannels()) {
-        dst.errorf("invalid source channel selected");
+        dst.errorfmt("invalid source channel selected");
         return false;
     }
     cspan<float> knots;
@@ -1239,7 +1389,7 @@ ImageBufAlgo::color_map(ImageBuf& dst, const ImageBuf& src, int srcchannel,
                                    0.75f, 0.0f,  1.0f, 1.0f,  1.0f };
         knots                  = cspan<float>(k);
     } else {
-        dst.errorf("Unknown map name \"%s\"", mapname);
+        dst.errorfmt("Unknown map name \"{}\"", mapname);
         return false;
     }
     return color_map(dst, src, srcchannel, int(knots.size() / 3), 3, knots, roi,
@@ -1254,7 +1404,7 @@ ImageBufAlgo::color_map(const ImageBuf& src, int srcchannel,
     ImageBuf result;
     bool ok = color_map(result, src, srcchannel, mapname, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::color_map() error");
+        result.errorfmt("ImageBufAlgo::color_map() error");
     return result;
 }
 
@@ -1421,7 +1571,7 @@ ImageBufAlgo::fixNonFinite(ImageBuf& dst, const ImageBuf& src,
         && mode != ImageBufAlgo::NONFINITE_BOX3
         && mode != ImageBufAlgo::NONFINITE_ERROR) {
         // Something went wrong
-        dst.errorf("fixNonFinite: unknown repair mode");
+        dst.errorfmt("fixNonFinite: unknown repair mode");
         return false;
     }
 
@@ -1451,7 +1601,7 @@ ImageBufAlgo::fixNonFinite(ImageBuf& dst, const ImageBuf& src,
     // pixel values, so the copy was enough.
 
     if (mode == ImageBufAlgo::NONFINITE_ERROR && *pixelsFixed) {
-        dst.errorf("Nonfinite pixel values found");
+        dst.errorfmt("Nonfinite pixel values found");
         ok = false;
     }
     return ok;
@@ -1466,7 +1616,7 @@ ImageBufAlgo::fixNonFinite(const ImageBuf& src, NonFiniteFixMode mode,
     ImageBuf result;
     bool ok = fixNonFinite(result, src, mode, pixelsFixed, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::fixNonFinite() error");
+        result.errorfmt("ImageBufAlgo::fixNonFinite() error");
     return result;
 }
 
@@ -1583,7 +1733,7 @@ over_impl_rgbafloat(ImageBuf& R, const ImageBuf& A, const ImageBuf& B, ROI roi,
                 for (int x = 0; x < w; ++x, r += 4, a += 4, b += 4) {
                     vfloat4 a_simd(a);
                     vfloat4 b_simd(b);
-                    vfloat4 alpha           = shuffle<3>(a_simd);
+                    vfloat4 alpha           = broadcast_element<3>(a_simd);
                     vfloat4 one_minus_alpha = one - clamp(alpha, zero, one);
                     vfloat4 result          = a_simd + one_minus_alpha * b_simd;
                     result.store(r);
@@ -1633,7 +1783,7 @@ ImageBufAlgo::over(const ImageBuf& A, const ImageBuf& B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = over(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::over() error");
+        result.errorfmt("ImageBufAlgo::over() error");
     return result;
 }
 
@@ -1664,7 +1814,7 @@ ImageBufAlgo::zover(const ImageBuf& A, const ImageBuf& B, bool z_zeroisinf,
     ImageBuf result;
     bool ok = zover(result, A, B, z_zeroisinf, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::zover() error");
+        result.errorfmt("ImageBufAlgo::zover() error");
     return result;
 }
 

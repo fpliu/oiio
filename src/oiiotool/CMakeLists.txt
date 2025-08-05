@@ -1,7 +1,12 @@
-# Copyright 2008-present Contributors to the OpenImageIO project.
-# SPDX-License-Identifier: BSD-3-Clause
-# https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
 
-fancy_add_executable (LINK_LIBRARIES OpenImageIO
-                                     ${Boost_LIBRARIES} # because regex
-                      )
+fancy_add_executable (SYSTEM_INCLUDE_DIRS
+                        ${ROBINMAP_INCLUDES}
+                        ${OpenCV_INCLUDES}
+                      LINK_LIBRARIES
+                        OpenImageIO
+                        $<TARGET_NAME_IF_EXISTS:OpenEXR::OpenEXR>
+                        ${OpenCV_LIBRARIES}
+                     )

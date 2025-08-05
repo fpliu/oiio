@@ -1,12 +1,13 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #include <OpenImageIO/argparse.h>
 #include <OpenImageIO/benchmark.h>
 #include <OpenImageIO/imagebuf.h>
 #include <OpenImageIO/imagebufalgo.h>
+#include <OpenImageIO/imagecache.h>
 #include <OpenImageIO/imageio.h>
 #include <OpenImageIO/strutil.h>
 #include <OpenImageIO/timer.h>
@@ -33,57 +34,48 @@ static std::string output_filename;
 static std::string output_format;
 static std::vector<char> buffer;
 static ImageSpec bufspec, outspec;
-static ImageCache* imagecache         = NULL;
+static std::shared_ptr<ImageCache> imagecache;
 static imagesize_t total_image_pixels = 0;
 static float cache_size               = 0;
-
-
-
-static int
-parse_files(int /*argc*/, const char* argv[])
-{
-    input_filename.emplace_back(argv[0]);
-    return 0;
-}
 
 
 
 static void
 getargs(int argc, char* argv[])
 {
-    bool help = false;
     ArgParse ap;
     // clang-format off
-    ap.options(
-        "imagespeed_test\n" OIIO_INTRO_STRING "\n"
-        "Usage:  imagespeed_test [options] filename...",
-        "%*", parse_files, "",
-        "--help", &help, "Print help message",
-        "-v", &verbose, "Verbose mode",
-        "--threads %d", &numthreads,
-            ustring::sprintf("Number of threads (default: %d)", numthreads).c_str(),
-        "--iters %d", &iterations,
-            ustring::sprintf("Number of iterations (default: %d)", iterations).c_str(),
-        "--trials %d", &ntrials, "Number of trials",
-        "--autotile %d", &autotile_size,
-            ustring::sprintf("Autotile size (when used; default: %d)", autotile_size).c_str(),
-        "--iteronly", &iter_only, "Run ImageBuf iteration tests only (not read tests)",
-        "--noiter", &no_iter, "Don't run ImageBuf iteration tests",
-        "--convert %s", &conversionname, "Convert to named type upon read (default: native)",
-        "--cache %f", &cache_size, "Specify ImageCache size, in MB",
-        "-o %s", &output_filename, "Test output by writing to this file",
-        "-od %s", &output_format, "Requested output format",
-        nullptr);
+    ap.intro("imagespeed_test\n" OIIO_INTRO_STRING)
+      .usage("imagespeed_test [options]");
+
+    ap.arg("filename")
+      .hidden()
+      .action([&](cspan<const char*> argv){ input_filename.emplace_back(argv[0]); });
+    ap.arg("-v", &verbose)
+      .help("Verbose mode");
+    ap.arg("--threads %d", &numthreads)
+      .help(Strutil::fmt::format("Number of threads (default: {})", numthreads));
+    ap.arg("--iters %d", &iterations)
+      .help(Strutil::fmt::format("Number of iterations (default: {})", iterations));
+    ap.arg("--trials %d", &ntrials)
+      .help("Number of trials");
+    ap.arg("--autotile %d", &autotile_size)
+      .help(Strutil::fmt::format("Autotile size (when used; default: {})", autotile_size));
+    ap.arg("--iteronly", &iter_only)
+      .help("Run ImageBuf iteration tests only (not read tests)");
+    ap.arg("--noiter", &no_iter)
+      .help("Don't run ImageBuf iteration tests");
+    ap.arg("--convert %s", &conversionname)
+      .help("Convert to named type upon read (default: native)");
+    ap.arg("--cache %f", &cache_size)
+      .help("Specify ImageCache size, in MB");
+    ap.arg("-o %s", &output_filename)
+      .help("Test output by writing to this file");
+    ap.arg("-od %s", &output_format)
+      .help("Requested output format");
     // clang-format on
-    if (ap.parse(argc, (const char**)argv) < 0) {
-        std::cerr << ap.geterror() << std::endl;
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
-    if (help) {
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
+
+    ap.parse(argc, (const char**)argv);
 }
 
 
@@ -94,7 +86,7 @@ time_read_image()
     for (ustring filename : input_filename) {
         auto in = ImageInput::open(filename.c_str());
         OIIO_ASSERT(in);
-        in->read_image(conversion, &buffer[0]);
+        in->read_image(0, 0, 0, in->spec().nchannels, conversion, &buffer[0]);
         in->close();
     }
 }
@@ -128,15 +120,16 @@ time_read_64_scanlines_at_a_time()
     for (ustring filename : input_filename) {
         auto in = ImageInput::open(filename.c_str());
         OIIO_ASSERT(in);
-        const ImageSpec& spec(in->spec());
+        ImageSpec spec   = in->spec_dimensions(0);
         size_t pixelsize = spec.nchannels * conversion.size();
         if (!pixelsize)
             pixelsize = spec.pixel_bytes(true);  // UNKNOWN -> native
         imagesize_t scanlinesize = spec.width * pixelsize;
         for (int y = 0; y < spec.height; y += 64) {
-            in->read_scanlines(y + spec.y,
+            in->read_scanlines(/*subimage=*/0, /*miplevel=*/0, y + spec.y,
                                std::min(y + spec.y + 64, spec.y + spec.height),
-                               0, conversion, &buffer[scanlinesize * y]);
+                               0, 0, spec.nchannels, conversion,
+                               &buffer[scanlinesize * y]);
         }
         in->close();
     }
@@ -149,7 +142,7 @@ time_read_imagebuf()
 {
     imagecache->invalidate_all(true);
     for (ustring filename : input_filename) {
-        ImageBuf ib(filename.string(), imagecache);
+        ImageBuf ib(filename, 0, 0, imagecache);
         ib.read(0, 0, true, conversion);
     }
 }
@@ -179,10 +172,8 @@ test_read(const std::string& explanation, void (*func)(), int autotile = 64,
     imagecache->attribute("autoscanline", autoscanline);
     double t    = time_trial(func, ntrials);
     double rate = double(total_image_pixels) / t;
-    std::cout << "  " << explanation << ": "
-              << Strutil::timeintervalformat(t, 2) << " = "
-              << Strutil::sprintf("%5.1f", rate / 1.0e6) << " Mpel/s"
-              << std::endl;
+    print("  {}: {} = {:5.1f} Mpel/s\n", explanation,
+          Strutil::timeintervalformat(t, 2), rate / 1.0e6);
 }
 
 
@@ -289,7 +280,7 @@ time_write_tiles_row_at_a_time()
 static void
 time_write_imagebuf()
 {
-    ImageBuf ib(output_filename, bufspec, &buffer[0]);  // wrap the buffer
+    ImageBuf ib(bufspec, span(buffer));  // wrap the buffer
     auto out = ImageOutput::create(output_filename);
     OIIO_ASSERT(out);
     bool ok = out->open(output_filename, outspec);
@@ -306,10 +297,8 @@ test_write(const std::string& explanation, void (*func)(), int tilesize = 0)
     outspec.tile_depth  = 1;
     double t            = time_trial(func, ntrials);
     double rate         = double(total_image_pixels) / t;
-    std::cout << "  " << explanation << ": "
-              << Strutil::timeintervalformat(t, 2) << " = "
-              << Strutil::sprintf("%5.1f", rate / 1.0e6) << " Mpel/s"
-              << std::endl;
+    print("  {}: {} = {:5.1f} Mpel/s\n", explanation,
+          Strutil::timeintervalformat(t, 2), rate / 1.0e6);
 }
 
 
@@ -451,14 +440,12 @@ test_pixel_iteration(const std::string& explanation,
     // Force the whole image to be read at once
     imagecache->attribute("autotile", autotile);
     imagecache->attribute("autoscanline", 1);
-    ImageBuf ib(input_filename[0].string(), imagecache);
+    ImageBuf ib(input_filename[0], 0, 0, imagecache);
     ib.read(0, 0, preload, TypeFloat);
     double t    = time_trial(std::bind(func, std::ref(ib), iters), ntrials);
     double rate = double(ib.spec().image_pixels()) / (t / iters);
-    std::cout << "  " << explanation << ": "
-              << Strutil::timeintervalformat(t / iters, 3) << " = "
-              << Strutil::sprintf("%5.1f", rate / 1.0e6) << " Mpel/s"
-              << std::endl;
+    print("  {}: {} = {:5.1f} Mpel/s\n", explanation,
+          Strutil::timeintervalformat(t / iters, 3), rate / 1.0e6);
 }
 
 
@@ -509,7 +496,7 @@ main(int argc, char** argv)
     imagesize_t maxpelchans = 0;
     for (auto&& fn : input_filename) {
         ImageSpec spec;
-        if (!imagecache->get_imagespec(fn, spec, 0, 0, true)) {
+        if (!imagecache->get_imagespec(fn, spec)) {
             std::cout << "File \"" << fn << "\" could not be opened.\n";
             return -1;
         }
@@ -560,8 +547,8 @@ main(int argc, char** argv)
         // Use the first image
         auto in = ImageInput::open(input_filename[0].c_str());
         OIIO_ASSERT(in);
-        bufspec = in->spec();
-        in->read_image(conversion, &buffer[0]);
+        bufspec = in->spec(0, 0);
+        in->read_image(0, 0, 0, bufspec.nchannels, conversion, &buffer[0]);
         in->close();
         in.reset();
         std::cout << "Timing ways of writing images:\n";
@@ -624,6 +611,5 @@ main(int argc, char** argv)
     if (verbose)
         std::cout << "\n" << imagecache->getstats(2) << "\n";
 
-    ImageCache::destroy(imagecache);
     return unit_test_failures;
 }

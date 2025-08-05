@@ -1,3 +1,8 @@
+..
+  Copyright Contributors to the OpenImageIO project.
+  SPDX-License-Identifier: CC-BY-4.0
+
+
 .. _chap-maketx:
 
 Making Tiled MIP-Map Texture Files With `maketx` or `oiiotool`
@@ -7,7 +12,7 @@ Making Tiled MIP-Map Texture Files With `maketx` or `oiiotool`
 Overview
 ========
 
-The TextureSystem (Chapter :ref:`chap-texturesystem_`) will exhibit much
+The TextureSystem (Chapter :ref:`chap-texturesystem`) will exhibit much
 higher performance if the image files it uses as textures are tiled (versus
 scanline) orientation, have multiple subimages at different resolutions
 (MIP-mapped), and include a variety of header or metadata fields
@@ -32,10 +37,7 @@ ordinary images into texture files: :program:`maketx` and
        straightforward and foolproof, in that you can't accidentally forget
        to turn it into a texture, as you might do with and much later
        :program:`oiiotool` was extended to be capable of directly writing
-       texture files. If you are simply converting an image into a texture,
-       :program:`maketx` is more straightforward and foolproof, in that you
-       can't accidentally forget to turn it into a texture, as you might do
-       with
+       texture files.
 
 
 
@@ -54,13 +56,17 @@ Where *input* and *output* name the input image and desired output filename.
 The input files may be of any image format recognized by OpenImageIO (i.e.,
 for which ImageInput plugins are available).  The file format of the output
 image will be inferred from the file extension of the output filename (e.g.,
-:filename:`foo.tif` will write a TIFF file).
+`foo.tif` will write a TIFF file).
 
 Command-line arguments are:
 
 .. option:: --help
 
     Prints usage information to the terminal.
+
+.. option:: --version
+
+    Prints the version designation of the OIIO library.
 
 .. option:: -v
 
@@ -155,6 +161,12 @@ Command-line arguments are:
     texture system, but some users may require it in order to create MIP-map
     images that are compatible with both OIIO and other texturing systems
     that require power-of-2 textures.
+
+.. option:: --keepaspect
+
+   Sets the `PixelAspectRatio` metadata to the input image aspect ratio,
+   allowing compatible viewers to display the output in the original aspect
+   ratio even if `--resize` is used.
 
 .. option:: --filter <name>
 
@@ -309,21 +321,9 @@ Command-line arguments are:
     identical, and outputs the texture as a single-channel image instead.
     That is, it changes RGB images that are gray into single-channel gray
     scale images.
-    
-    Detects multi-channel images in which all color components are
-    identical, and outputs the texture as a single-channel image instead.
-    That is, it changes RGB images that are gray into single-channel gray
-    scale images.
 
 .. option:: --opaque-detect
 
-    Detects images that have a designated alpha channel for which the alpha
-    value for all pixels is 1.0 (fully opaque), and omits the alpha channel
-    from the output texture.  So, for example, an RGBA input texture where
-    A=1 for all pixels will be output just as RGB.  The purpose is to save
-    disk space, texture I/O bandwidth, and texturing time for those textures
-    where alpha was present in the input, but clearly not necessary.
-    
     Detects images that have a designated alpha channel for which the alpha
     value for all pixels is 1.0 (fully opaque), and omits the alpha channel
     from the output texture.  So, for example, an RGBA input texture where
@@ -350,13 +350,13 @@ Command-line arguments are:
     settings on the command line or in the input texture.
     
     Specifically, this option sets the tile size (to 64x64 for 8 bit, 64x32
-    for 16 bit integer, and 32x32 for float or `half` images), uses
+    for 16 bit integer, and 32x32 for `float` or `half` images), uses
     "separate" planar configuration (`--separate`), and sets PRMan-specific
     metadata (`--prman-metadata`).  It also outputs sint16 textures if
     uint16 is requested (because PRMan for some reason does not accept true
     uint16 textures), and in the case of TIFF files will omit the Exif
     directory block which will not be recognized by the older version of
-    libtiff used by PRMan.
+    libtiff used by PRMan versions <= 26.
     
     OpenImageIO will happily accept textures that conform to PRMan's
     expectations, but not vice versa.  But OpenImageIO's TextureSystem has
@@ -467,31 +467,108 @@ Command-line arguments are:
     if and only if the R, G, B channel values are identical in all pixels,
     otherwise it will be interpreted as a 3-channel normal map.
 
+.. option:: --uvslopes_scale <scalefactor>
 
+   Used in conjunction with `--bumpslopes`, this computes derivatives for
+   the bumpslopes data in UV space rather than in texel space, and divides
+   them by a scale factor. If the value is 0 (default), this is disabled.
+   For a nonzero value, it will be the scale factor. If you use this feature,
+   a suggested value is 256.
+
+   (This option was added for OpenImageIO 2.3.)
+
+.. option:: --slopefilter <filtername>
+
+   Used in conjunction with `--bumpslopes`, this sets the filter for computing
+   the slopes when `--bumpformat` is set to "height". The default value is
+   "sobel". The option "centraldiff" matches the behavior of `txmake` and is
+   less prone to ring-shaped artifacting.
+
+.. option:: --bumpinverts
+
+   Used in conjunction with `--bumpslopes`, this inverts the computed slopes 
+   on the s/u/x direction.
+
+.. option:: --bumpinvertt
+
+   Used in conjunction with `--bumpslopes`, this inverts the computed slopes 
+   on the t/u/y direction.
+
+.. option:: --bumpscale <strength>
+
+   Used in conjunction with `--bumpslopes`, this scales the strength of the 
+   resulting bumpslopes map.
+
+.. option:: --bumprange <brange>
+
+   Used in conjunction with `--bumpslopes`, this sets the convention used for 
+   normal map data when `--bumpformat` is set to "normal". When set to 
+   "centered", the normals data is assumed to exist on the range 
+   :math:`[-1,1]`. When set to "positive", the normals data is assumed to 
+   exist on the range :math:`[0,1]`. When set to "auto", the default value, 
+   the range is inferred based on whether or not negative values are present
+   in the input image.
+
+.. option:: --cdf
+            --cdfsigma <SIGMA>
+            --cdfbits <BITS>
+
+   When `--cdf` is used, the output texture will write a Gaussian CDF and
+   Inverse Gaussian CDF as per-channel metadata in the texture, which can be
+   used by shaders to implement Histogram-Preserving Blending. This is only
+   useful when the texture being created is written to an image format that
+   supports arbitrary metadata (e.g. OpenEXR).
+
+   When `--cdf` has been enabled, the additional options `--cdfsigma` may be
+   used to specify the CDF sigma value (defaulting to 1.0/6.0), and
+   `--cdfbits` specifies the number of bits to use for the size of the CDF
+   table (defaulting to 8, which means 256 bins).
+   
+   References:
+
+   * Histogram-Preserving Blending for Randomized Texture Tiling," JCGT 8(4),
+     2019.
+   
+   * Heitz/Neyret, "High-Performance By-Example Noise using a
+     Histogram-Preserving Blending Operator," ACM SIGGRAPH / Eurographics
+     Symposium on High-Performance Graphics 2018.)
+
+   * Benedikt Bitterli https://benedikt-bitterli.me/histogram-tiling/
+
+   These options were first added in OpenImageIO 2.3.10.
+
+.. option:: --handed <value>
+
+   Adds a "handed" metadata to the resulting texture, which reveals the
+   handedness of vector displacement maps or normal maps, when expressed in
+   tangent space. Possible values are `left` or `right`.
+
+   This option was first added in OpenImageIO 2.4.0.2.
 
 
 .. sec-oiiotooltex:
 
 `oiiotool`
-=========
+==========
 
 The :program:`oiiotool` utility (Chapter :ref:`chap-oiiotool`) is capable of
-writing textures using the `-otex` option, and lat-long environment maps
-using the `-oenv` option. Roughly speaking,
+writing textures using the `-otex` option, lat-long environment maps using the
+`-oenv` option, and bump/normal maps that include normal distribution moments.
+Roughly speaking,
 
     `maketx` [*maketx-options*] *input* `-o` *output*
 
-is equivalent to
+    `maketx -envlatl` [*maketx-options*] *input* `-o` *output*
+
+    `maketx -bumpslopes` [*maketx-options*] *input* `-o` *output*
+
+are equivalent to, respectively,
 
     `oiiotool` *input* [*oiiotool-options*] `-otex` *output*
 
-and
-
-    `maketx -envlatl` [*maketx-options*] *input* `-o` *output*
-
-is equivalent to
-
     `oiiotool` *input* [*oiiotool-options*] `-oenv` *output*
+
+    `oiiotool` *input* [*oiiotool-options*] `-obump` *output*
 
 However, the notation for the various options are not identical between the
 two programs, as will be explained by the remainder of this section.
@@ -577,8 +654,8 @@ run generally:
     Set/override the camera and screen matrices.
 
 
-Optional arguments to `-otex` and `-oenv`
------------------------------------------
+Optional arguments to `-otex`, `-oenv`, `-obump`
+------------------------------------------------
 
 As with many :program:`oiiotool` commands, the `-otex` and `-oenv` may
 have various optional arguments appended, in the form `:name=value`
@@ -591,26 +668,28 @@ detailed explanations of each, for the corresponding :program:`maketx`
 option):
 
 
-=======================   ============================================
-Appended Option           `maketx` equivalent
-=======================   ============================================
-`wrap=` *string*          `--wrap`
-`swrap=` *string*         `--swrap`
-`twrap=` *string*         `--twrap`
-`resize=1`                `--resize`
-`nomipmap=1`              `--nomipmap`
-`updatemode=1`            `-u`
-`monochrome_detect=1`     `--monochrome-detect`
-`opaque_detect=1`         `--opaque-detect`
-`unpremult=1`             `--unpremult`
-`incolorspace=` *name*    `--incolorspace`
-`outcolorspace=` *name*   `--outcolorspace`
-`hilightcomp=1`           `--hicomp`
-`sharpen=` *float*        `--sharpen`
-`filter=` *string*        `--filter`
-`prman_metadata=1`        `--prman`
-`prman_options=1`         `--prman-metadata`
-=======================   ============================================
+=========================   ============================================
+Appended Option             `maketx` equivalent
+=========================   ============================================
+`wrap=` *string*            `--wrap`
+`swrap=` *string*           `--swrap`
+`twrap=` *string*           `--twrap`
+`resize=1`                  `--resize`
+`nomipmap=1`                `--nomipmap`
+`updatemode=1`              `-u`
+`monochrome_detect=1`       `--monochrome-detect`
+`opaque_detect=1`           `--opaque-detect`
+`unpremult=1`               `--unpremult`
+`incolorspace=` *name*      `--incolorspace`
+`outcolorspace=` *name*     `--outcolorspace`
+`hilightcomp=1`             `--hicomp`
+`sharpen=` *float*          `--sharpen`
+`filter=` *string*          `--filter`
+`bumpformat=` *string*      `--bumpformat`
+`uvslopes_scale=` *float*   `--uvslopes-scale`
+`prman_metadata=1`          `--prman`
+`prman_options=1`           `--prman-metadata`
+=========================   ============================================
 
 
 Examples

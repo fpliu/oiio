@@ -1,4 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 # Utility script to download and build LibRaw
 
@@ -7,8 +11,7 @@ set -ex
 
 # Which LibRaw to retrieve, how to build it
 LIBRAW_REPO=${LIBRAW_REPO:=https://github.com/LibRaw/LibRaw.git}
-LIBRAW_VERSION=${LIBRAW_VERSION:=0.19.5}
-LIBRAW_BRANCH=${LIBRAW_BRANCH:=${LIBRAW_VERSION}}
+LIBRAW_VERSION=${LIBRAW_VERSION:=0.21.3}
 
 # Where to install the final results
 LOCAL_DEPS_DIR=${LOCAL_DEPS_DIR:=${PWD}/ext}
@@ -18,7 +21,7 @@ LIBRAW_INSTALL_DIR=${LIBRAW_INSTALL_DIR:=${LOCAL_DEPS_DIR}/libraw-install}
 LIBRAW_BUILD_TYPE=${LIBRAW_BUILD_TYPE:=Release}
 
 pwd
-echo "Building LibRaw ${LIBRAW_BRANCH}"
+echo "Building LibRaw ${LIBRAW_VERSION}"
 echo "  build dir will be: ${LIBRAW_BUILD_DIR}"
 echo "  install dir will be: ${LIBRAW_INSTALL_DIR}"
 echo "  build type is ${LIBRAW_BUILD_TYPE}"
@@ -34,12 +37,15 @@ mkdir -p ${LIBRAW_INSTALL_DIR} && true
 mkdir -p ${LIBRAW_BUILD_DIR} && true
 
 pushd ${LIBRAW_SOURCE_DIR}
-git checkout ${LIBRAW_BRANCH} --force
 
-aclocal
-autoreconf --install
-./configure --prefix=${LIBRAW_INSTALL_DIR}
-make -j ${PARALLEL:=4} && make install
+git checkout ${LIBRAW_VERSION} --force
+
+if [[ -z $DEP_DOWNLOAD_ONLY ]]; then
+    aclocal
+    autoreconf --install
+    ./configure --prefix=${LIBRAW_INSTALL_DIR}
+    time make -j ${PARALLEL:=4} && make install
+fi
 
 popd
 

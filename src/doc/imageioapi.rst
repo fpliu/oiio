@@ -1,3 +1,8 @@
+..
+  Copyright Contributors to the OpenImageIO project.
+  SPDX-License-Identifier: CC-BY-4.0
+
+
 Image I/O API Helper Classes
 ############################
 
@@ -26,7 +31,7 @@ vector and matrix types, and an array length (if
 it's an array).
 
 The remainder of this section describes the C++ API for `TypeDesc`.
-See Section~\ref{sec:pythontypedesc} for the corresponding Python
+See Section :ref:`Python Bindings<chap-pythonbindings>` for the corresponding Python
 bindings.
 
 .. doxygenstruct:: OIIO::TypeDesc
@@ -41,21 +46,24 @@ in the outer OpenImageIO scope:
 
     TypeUnknown TypeFloat TypeColor TypePoint TypeVector TypeNormal
     TypeMatrix33 TypeMatrix44 TypeMatrix TypeHalf
-    TypeInt TypeUInt TypeInt16 TypeUInt16 TypeInt8 TypeUInt8
-    TypeString TypeTimeCode TypeKeyCode TypeFloat4 TypeRational
+    TypeInt TypeUInt TypeInt32 TypeUInt32 TypeInt64 TypeUInt64
+    TypeInt16 TypeUInt16 TypeInt8 TypeUInt8
+    TypeFloat2 TypeVector2 TypeVector2i TypeVector3i TypeFloat4
+    TypeString TypeTimeCode TypeKeyCode
+    TypeBox2 TypeBox2i TypeBox3 TypeBox3i
+    TypeRational TypePointer TypeUstringhash
 
 The only types commonly used to store *pixel values* in image files
-are scalars of ``UINT8``, ``UINT16``, `float`, and ``half``
-(the last only used by OpenEXR, to the best of our knowledge).
+are scalars of ``UINT8``, ``UINT16``, `float`, and ``half``.
 
-Note that the `TypeDesc` (which is also used for applications other
-than images) can describe many types not used by
-OpenImageIO.  Please ignore this extra complexity; only the above simple types are understood by
-OpenImageIO as pixel storage data types, though a few others, including
-`string` and ``MATRIX44`` aggregates, are occasionally used for
-*metadata* for certain image file formats (see `sec-imageoutput-metadata`
-Sections `sec-imageoutput-metadata`, `sec-imageinput-metadata`,
-and the documentation of individual ImageIO plugins for details).
+Note that the `TypeDesc` (which is also used for applications other than
+images) can describe many types not used by OpenImageIO.  Please ignore this
+extra complexity; only the above simple types are understood by OpenImageIO as
+pixel storage data types, though a few others, including `string` and
+``MATRIX44`` aggregates, are occasionally used for *metadata* for certain
+image file formats (see Sections :ref:`sec-imageoutput-metadata`,
+:ref:`sec-imageinput-metadata`, and the documentation of individual ImageIO
+plugins for details).
 
 
 
@@ -65,7 +73,11 @@ and the documentation of individual ImageIO plugins for details).
 Non-owning string views: ``string_view``
 ==========================================
 
-.. doxygenclass:: OIIO::string_view
+.. cpp:type:: using string_view = basic_string_view<char>;
+
+    `string_view` is a synonym for a non-mutable `string_view<char>`.
+
+.. doxygenclass:: OIIO::basic_string_view
     :members:
 
 |
@@ -83,8 +95,8 @@ Efficient unique strings: ``ustring``
 
 .. _sec-span:
 
-Non-owning array views: ``span`` / ``cspan``
-============================================
+Non-owning contiguous array views: ``span`` / ``cspan``
+=======================================================
 
 .. doxygenclass:: OIIO::span
     :members:
@@ -95,6 +107,18 @@ Additionally, there is a convenience template:
 .. cpp:type:: template<typename T> cspan = span<const T>
 
     `cspan<T>` is a synonym for a non-mutable `span<const T>`.
+
+|
+
+
+.. _sec-span:
+
+Non-owning image array views: ``image_span``
+============================================
+
+.. doxygenclass:: OIIO::image_span
+    :members:
+
 
 |
 
@@ -220,7 +244,7 @@ just exist in the OpenImageIO namespace as general utilities. (See
         int threads;
         OIIO::getattribute ("threads", &threads);
         std::string path;
-        OIIO::getattribute ("plugin_searchpath", &path);
+        OIIO::getattribute ("plugin_searchpath", path);
 
 .. cpp:function:: int get_int_attribute (string_view name, int defaultvalue=0)
                   float get_float_attribute (string_view name, float defaultvalue=0)
@@ -232,8 +256,8 @@ just exist in the OpenImageIO namespace as general utilities. (See
 
     EXAMPLES::
 
-        int threads = OIIO::getattribute ("threads", 0);
-        string_view path = OIIO::getattribute ("plugin_searchpath");
+        int threads = OIIO::get_int_attribute ("threads", 0);
+        string_view path = OIIO::get_string_attribute ("plugin_searchpath");
 
 
 
@@ -250,18 +274,43 @@ just exist in the OIIO namespace as general utilities. (See
 .. doxygenfunction:: openimageio_version
 
 
-.. cpp:function:: std::string OIIO::geterror ()
+.. cpp:function:: bool OIIO::has_error ()
+
+    Is there a pending global error message waiting to be retrieved?
+
+.. cpp:function:: std::string OIIO::geterror (bool clear = true)
 
     Returns any error string describing what went wrong if
     `ImageInput::create()` or `ImageOutput::create()` failed (since in such
-    cases, the `ImageInput` or `ImageOutput` itself does not exist to have
-    its own `geterror()` function called). This function returns the last
-    error for this particular thread; separate threads will not clobber each
-    other's global error messages.
+    cases, the ImageInput or ImageOutput itself does not exist to have its
+    own `geterror()` function called). This function returns the last error
+    for this particular thread, and clear the pending error message unless
+    `clear` is false; separate threads will not clobber each other's global
+    error messages.
 
 
 
 .. doxygenfunction:: declare_imageio_format
+
+
+.. doxygenfunction:: is_imageio_format_name
+
+.. doxygenfunction:: get_extension_map
+
+.. doxygenfunction:: OIIO::set_colorspace
+
+.. doxygenfunction:: OIIO::set_colorspace_rec709_gamma
+
+.. doxygenfunction:: OIIO::equivalent_colorspace
+
+|
+
+ .. _sec-startupshutdown:
+
+Startup and Shutdown
+==========================================
+
+.. doxygenfunction:: shutdown
 
 |
 
@@ -275,7 +324,13 @@ There are a few special environment variables that can be used to control
 OpenImageIO at times that it is not convenient to set options individually from
 inside the source code.
 
-``OPENIMAGEIO_OPTIONS``
+.. cpp:var:: OPENIMAGEIO_FONTS
+
+    A searchpath for finding fonts (for example, when using by
+    `ImageBufAlgo::render_text` or `oiiotool --text`). This may contain a
+    list of directories separated by ":" or ";".
+
+.. cpp:var:: OPENIMAGEIO_OPTIONS
 
     Allows you to seed the global OpenImageIO-wide options.
 
@@ -288,7 +343,7 @@ inside the source code.
 
         OIIO::attribute ("options", value);
 
-``OPENIMAGEIO_IMAGECACHE_OPTIONS``
+.. cpp:var:: OPENIMAGEIO_IMAGECACHE_OPTIONS
 
     Allows you to seed the options for any ImageCache created.
 
@@ -302,7 +357,17 @@ inside the source code.
         imagecache->attribute ("options", value);
 
 
-``OPENIMAGEIO_TEXTURESYSTEM_OPTIONS``
+.. cpp:var:: OPENIMAGEIO_PLUGIN_PATH
+
+    A colon-separated list of directories to search for OpenImageIO plugins
+    (dynamicaly loadable libraries that implement image format readers
+    and writers).
+
+    This is a new name beginning with OpenImageIO 2.6.3. The old name
+    ``OIIO_LIBRARY_PATH`` is still supported, but deprecated.
+
+
+.. cpp:var:: OPENIMAGEIO_TEXTURE_OPTIONS
 
     Allows you to seed the options for any TextureSystem created.
 
@@ -314,3 +379,34 @@ inside the source code.
     will be passed to a call to::
 
         texturesys->attribute ("options", value);
+
+.. cpp:var:: OPENIMAGEIO_THREADS
+             CUE_THREADS
+
+    Either of these sets the default number of threads that OpenImageIO will
+    use for its thread pool. If both are set, ``OPENIMAGEIO_THREADS`` will
+    take precedence. If neither is set, the default will be 0, which means
+    to use as many threads as there are physical cores on the machine.
+
+.. cpp:var:: OPENIMAGEIO_METADATA_HISTORY
+
+    If set to a nonzero integer value, `oiiotool` and `maketx` will by default
+    write the command line into the ImageHistory and Software metadata fields of any
+    images it outputs. The default if this is not set is to only write the
+    name and version of the software and an indecipherable hash of the command
+    line, but not the full human-readable command line. (This was added in
+    OpenImageIO 2.5.11.)
+
+.. cpp:var:: OPENIMAGEIO_PYTHON_LOAD_DLLS_FROM_PATH
+
+    Windows only. Mimics the DLL-loading behavior of Python 3.7 and earlier. 
+    If set to "1", all directories under ``PATH`` will be added to the DLL load 
+    path before attempting to import the OpenImageIO module. (This was added in
+    OpenImageIO 3.0.3.0)
+
+    Note: This "opt-in-style" behavior replaces and inverts the "opt-out-style" 
+    Windows DLL-loading behavior governed by the now-defunct `OIIO_LOAD_DLLS_FROM_PATH` 
+    environment variable (added in OpenImageIO 2.4.0/2.3.18). 
+
+    In other words, to reproduce the default Python-module-loading behavior of 
+    earlier versions of OIIO, set ``OPENIMAGEIO_PYTHON_LOAD_DLLS_FROM_PATH=1``.

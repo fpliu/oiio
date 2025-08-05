@@ -1,3 +1,8 @@
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+#include <sstream>
 #include <vector>
 
 #include "DDImage/Row.h"
@@ -64,7 +69,7 @@ bool gTxFiltersInitialized = false;
 static std::vector<const char*> gFilterNames;
 
 
-class txWriter : public Writer {
+class txWriter final : public Writer {
     int preset_;
     int tileW_, tileH_;
     int planarMode_;
@@ -320,9 +325,10 @@ public:
         destSpec.attribute("maketx:checknan", (int)checkNan_);
         destSpec.attribute("maketx:verbose", (int)verbose_);
 
-        std::string software = Strutil::sprintf("OpenImageIO %s, Nuke %s",
-                                                OIIO_VERSION_STRING,
-                                                applicationVersion().string());
+        std::string software
+            = Strutil::fmt::format("OpenImageIO {}, Nuke {}",
+                                   OIIO_VERSION_STRING,
+                                   applicationVersion().string());
         destSpec.attribute("Software", software);
 
         if (aborted())
@@ -331,10 +337,11 @@ public:
         OIIO::attribute("threads", (int)Thread::numCPUs);
 
         iop->progressMessage("Writing %s", filename());
+        std::stringstream errmsg;
         if (!ImageBufAlgo::make_texture(oiiotxMode[txMode_], srcBuffer,
-                                        filename(), destSpec, &std::cout))
-            iop->error("ImageBufAlgo::make_texture failed to write file %s",
-                       filename());
+                                        filename(), destSpec, &errmsg))
+            iop->error("ImageBufAlgo::make_texture failed to write file %s (%s)",
+                       filename(), errmsg.str().c_str());
     }
 
     const char* help() { return "Tiled, mipmapped texture format"; }

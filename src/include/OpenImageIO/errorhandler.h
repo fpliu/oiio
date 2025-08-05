@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #pragma once
@@ -15,7 +15,7 @@ OIIO_NAMESPACE_BEGIN
 /// ErrorHandler is a simple class that accepts error messages
 /// (classified as errors, severe errors, warnings, info, messages, or
 /// debug output) and handles them somehow.  By default it just prints
-/// the messages to stdout and/or stderr (and supresses some based on a
+/// the messages to stdout and/or stderr (and suppresses some based on a
 /// "verbosity" level).
 ///
 /// The basic idea is that your library code has no idea whether some
@@ -27,7 +27,7 @@ OIIO_NAMESPACE_BEGIN
 /// different behavior from the default console output) and make all
 /// error-like output via the ErrorHandler*.
 ///
-class OIIO_API ErrorHandler {
+class OIIO_UTIL_API ErrorHandler {
 public:
     /// Error categories.  We use broad categories in the high order bits.
     /// A library may just use these categories, or may create individual
@@ -82,109 +82,48 @@ public:
 #endif
 
     //
-    // Formatted output with the same notation as Strutil::format.
-    /// Use with caution! Some day this will change to be fmt-like rather
-    /// than printf-like.
+    // Formatted output with std::format notation. Use these if you
+    // specifically want std::format-notation, even before format() changes
+    // to the new notation in some future OIIO release.
     //
     template<typename... Args>
-    void info(const char* format, const Args&... args)
+    void infofmt(const char* format, const Args&... args)
     {
         if (verbosity() >= VERBOSE)
-            info(Strutil::format(format, args...));
+            info(Strutil::fmt::format(format, args...));
     }
 
-    /// Warning message with printf-like formatted error message.
-    /// Will not print unless verbosity >= NORMAL (i.e. will suppress
-    /// for QUIET).
     template<typename... Args>
-    void warning(const char* format, const Args&... args)
+    void warningfmt(const char* format, const Args&... args)
     {
         if (verbosity() >= NORMAL)
-            warning(Strutil::format(format, args...));
+            warning(Strutil::fmt::format(format, args...));
     }
 
-    /// Error message with printf-like formatted error message.
-    /// Will print regardless of verbosity.
     template<typename... Args>
-    void error(const char* format, const Args&... args)
+    void errorfmt(const char* format, const Args&... args)
     {
-        error(Strutil::format(format, args...));
+        error(Strutil::fmt::format(format, args...));
     }
 
-    /// Severe error message with printf-like formatted error message.
-    /// Will print regardless of verbosity.
     template<typename... Args>
-    void severe(const char* format, const Args&... args)
+    void severefmt(const char* format, const Args&... args)
     {
-        severe(Strutil::format(format, args...));
+        severe(Strutil::fmt::format(format, args...));
     }
 
-    /// Prefix-less message with printf-like formatted error message.
-    /// Will not print if verbosity is QUIET.  Also note that unlike
-    /// the other routines, message() will NOT append a newline.
     template<typename... Args>
-    void message(const char* format, const Args&... args)
+    void messagefmt(const char* format, const Args&... args)
     {
         if (verbosity() > QUIET)
-            message(Strutil::format(format, args...));
+            message(Strutil::fmt::format(format, args...));
     }
 
-    /// Debugging message with printf-like formatted error message.
-    /// This will not produce any output if not in DEBUG mode, or
-    /// if verbosity is QUIET.
     template<typename... Args>
-    void debug(const char* format OIIO_MAYBE_UNUSED,
-               const Args&... args OIIO_MAYBE_UNUSED)
+    void debugfmt(const char* format, const Args&... args)
     {
 #ifndef NDEBUG
-        debug(Strutil::format(format, args...));
-#endif
-    }
-
-    //
-    // Formatted output with printf notation. Use these if you specifically
-    // want printf-notation, even after format() changes to python notation
-    // for OIIO 2.1.
-    //
-    template<typename... Args>
-    void infof(const char* format, const Args&... args)
-    {
-        if (verbosity() >= VERBOSE)
-            info(Strutil::sprintf(format, args...));
-    }
-
-    template<typename... Args>
-    void warningf(const char* format, const Args&... args)
-    {
-        if (verbosity() >= NORMAL)
-            warning(Strutil::sprintf(format, args...));
-    }
-
-    template<typename... Args>
-    void errorf(const char* format, const Args&... args)
-    {
-        error(Strutil::sprintf(format, args...));
-    }
-
-    template<typename... Args>
-    void severef(const char* format, const Args&... args)
-    {
-        severe(Strutil::sprintf(format, args...));
-    }
-
-    template<typename... Args>
-    void messagef(const char* format, const Args&... args)
-    {
-        if (verbosity() > QUIET)
-            message(Strutil::sprintf(format, args...));
-    }
-
-    template<typename... Args>
-    void debugf(const char* format OIIO_MAYBE_UNUSED,
-                const Args&... args OIIO_MAYBE_UNUSED)
-    {
-#ifndef NDEBUG
-        debug(Strutil::sprintf(format, args...));
+        debug(Strutil::fmt::format(format, args...));
 #endif
     }
 

@@ -1,31 +1,12 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #pragma once
 
 #include <stdexcept>
 #include <vector>
-
-// We're including stdint.h to get int64_t and INT64_MIN. But on some
-// platforms, stdint.h only defines them if __STDC_LIMIT_MACROS is defined,
-// so we do so. But, oops, if user code included stdint.h before this file,
-// and without defining the macro, it may have had ints one and only include
-// and not seen the definitions we need, so at least try to make a helpful
-// compile-time error in that case.
-// And very old MSVC 9 versions don't even have stdint.h.
-#if defined(_MSC_VER) && _MSC_VER < 1600
-typedef __int64 int64_t;
-#else
-#    ifndef __STDC_LIMIT_MACROS
-#        define __STDC_LIMIT_MACROS /* needed for some defs in stdint.h */
-#    endif
-#    include <cstdint>
-#    if !defined(INT64_MIN)
-#        error You must define __STDC_LIMIT_MACROS prior to including stdint.h
-#    endif
-#endif
 
 #include <OpenImageIO/oiioversion.h>
 #include <OpenImageIO/strided_ptr.h>
@@ -39,7 +20,9 @@ OIIO_NAMESPACE_BEGIN
 /// strides (expressed in bytes) through the data.  An image_view<T> is
 /// mutable (the values in the image may be modified), whereas an
 /// image_view<const T> is not mutable.
-template<typename T> class image_view {
+template<typename T>
+class OIIO_DEPRECATED("image_view is deprecated. Consider image_span.")
+    image_view {
 public:
     typedef T value_type;
     typedef T& reference;
@@ -123,9 +106,9 @@ private:
         m_depth      = depth;
         m_chanstride = chanstride != AutoStride ? chanstride : sizeof(T);
         m_xstride    = xstride != AutoStride ? xstride
-                                          : m_nchannels * m_chanstride;
-        m_ystride = ystride != AutoStride ? ystride : m_width * m_xstride;
-        m_zstride = zstride != AutoStride ? zstride : m_height * m_ystride;
+                                             : m_nchannels * m_chanstride;
+        m_ystride    = ystride != AutoStride ? ystride : m_width * m_xstride;
+        m_zstride    = zstride != AutoStride ? zstride : m_height * m_ystride;
     }
 
     inline T* getptr(int c, int x, int y, int z = 0) const

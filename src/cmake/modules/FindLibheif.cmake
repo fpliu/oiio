@@ -1,11 +1,15 @@
 # Module to find LIBHEIF
 #
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+#
 # This module will first look into the directories defined by the variables:
 #   - Libheif_ROOT, LIBHEIF_INCLUDE_PATH, LIBHEIF_LIBRARY_PATH
 #
 # This module defines the following variables:
 #
-# LIBHEIF_FOUND            True if LIBHEIF was found.
+# Libheif_FOUND            True if LIBHEIF was found.
 # LIBHEIF_INCLUDES         Where to find LIBHEIF headers
 # LIBHEIF_LIBRARIES        List of libraries to link against when using LIBHEIF
 # LIBHEIF_VERSION          Version of LIBHEIF (e.g., 3.6.2)
@@ -30,17 +34,24 @@ if (LIBHEIF_INCLUDE_DIR)
     string(REGEX MATCHALL "[0-9.]+" LIBHEIF_VERSION ${TMP})
 endif ()
 
-if (LIBHEIF_INCLUDE_DIR AND LIBHEIF_LIBRARY)
-    set(LIBHEIF_INCLUDES "${LIBHEIF_INCLUDE_DIR}" CACHE PATH "Libheif include path")
-    set(LIBHEIF_LIBRARIES "${LIBHEIF_LIBRARY}" CACHE STRING "Libheif libraries")
-endif()
-
 include (FindPackageHandleStandardArgs)
-find_package_handle_standard_args (LIBHEIF
-    REQUIRED_VARS   LIBHEIF_INCLUDES
-                    LIBHEIF_LIBRARIES
-    VERSION_VAR     LIBHEIF_VERSION
+find_package_handle_standard_args (Libheif
+    REQUIRED_VARS   LIBHEIF_INCLUDE_DIR
+                    LIBHEIF_LIBRARY
     )
+
+if (Libheif_FOUND)
+    set(LIBHEIF_INCLUDES "${LIBHEIF_INCLUDE_DIR}")
+    set(LIBHEIF_LIBRARIES "${LIBHEIF_LIBRARY}")
+
+    if (NOT TARGET Libheif::Libheif)
+        add_library(Libheif::Libheif UNKNOWN IMPORTED)
+        set_target_properties(Libheif::Libheif PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${LIBHEIF_INCLUDES}")
+        set_property(TARGET Libheif::Libheif APPEND PROPERTY
+            IMPORTED_LOCATION "${LIBHEIF_LIBRARIES}")
+    endif ()
+endif()
 
 mark_as_advanced (
     LIBHEIF_INCLUDES

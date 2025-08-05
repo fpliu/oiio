@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #include <algorithm>
@@ -30,32 +30,24 @@ static int threadcounts[] = { 1,  2,  4,  8,  12,  16,   20,
 static void
 getargs(int argc, char* argv[])
 {
-    bool help = false;
-    ArgParse ap;
     // clang-format off
-    ap.options(
-        "thread_test\n" OIIO_INTRO_STRING "\n"
-        "Usage:  thread_test [options]",
-        // "%*", parse_files, "",
-        "--help", &help, "Print help message",
-        "-v", &verbose, "Verbose mode",
-        "--threads %d", &numthreads,
-            ustring::sprintf("Number of threads (default: %d)", numthreads).c_str(),
-        "--iters %d", &iterations,
-            ustring::sprintf("Number of iterations (default: %d)", iterations).c_str(),
-        "--trials %d", &ntrials, "Number of trials",
-        "--wedge", &wedge, "Do a wedge test",
-        nullptr);
+    ArgParse ap;
+    ap.intro("thread_test\n" OIIO_INTRO_STRING)
+      .usage("thread_test [options]");
+
+    ap.arg("-v", &verbose)
+      .help("Verbose mode");
+    ap.arg("--threads %d", &numthreads)
+      .help(Strutil::fmt::format("Number of threads (default: {})", numthreads));
+    ap.arg("--iters %d", &iterations)
+      .help(Strutil::fmt::format("Number of iterations (default: {})", iterations));
+    ap.arg("--trials %d", &ntrials)
+      .help("Number of trials");
+    ap.arg("--wedge", &wedge)
+      .help("Do a wedge test");
     // clang-format on
-    if (ap.parse(argc, (const char**)argv) < 0) {
-        std::cerr << ap.geterror() << std::endl;
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
-    if (help) {
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
+
+    ap.parse(argc, (const char**)argv);
 }
 
 
@@ -102,9 +94,9 @@ time_thread_group()
 void
 time_thread_pool()
 {
-    std::cout << "\nTiming how long it takes to launch from thread_pool:\n";
-    std::cout << "threads\ttime (best of " << ntrials << ")\n";
-    std::cout << "-------\t----------\n";
+    print("\nTiming how long it takes to launch from thread_pool:\n");
+    print("threads\ttime (best of {})\n", ntrials);
+    print("-------\t----------\n");
     thread_pool* pool(default_thread_pool());
     for (int i = 0; threadcounts[i] <= numthreads; ++i) {
         int nt = wedge ? threadcounts[i] : numthreads;
@@ -125,8 +117,8 @@ time_thread_pool()
         double range;
         double t = time_trial(func, ntrials, its, &range);
 
-        std::cout << Strutil::sprintf("%2d\t%5.1f   launch %8.1f threads/sec\n",
-                                      nt, t, (nt * its) / t);
+        print("{:2}\t{:5.1f}   launch {:8.1f} threads/sec\n", nt, t,
+              (nt * its) / t);
         if (!wedge)
             break;  // don't loop if we're not wedging
     }

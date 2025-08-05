@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-from __future__ import absolute_import
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+from __future__ import annotations
+
 import OpenImageIO as oiio
+
 
 
 # Test that every expected enum value of BASETYPE exists
@@ -63,12 +68,13 @@ def vecsemantics_enum_test():
         oiio.TIMECODE
         oiio.KEYCODE
         oiio.RATIONAL
+        oiio.BOX
         print ("Passed VECSEMANTICS")
     except:
         print ("Failed VECSEMANTICS")
 
 # print the details of a type t
-def breakdown_test(t, name="", verbose=True):
+def breakdown_test(t: oiio.TypeDesc, name="", verbose=True):
     print ("type '%s'" % name)
     print ("    c_str \"" + t.c_str() + "\"")
     if verbose:
@@ -106,12 +112,17 @@ try:
                     "FLOAT, SCALAR, NOXFORM, array of 6")
     breakdown_test (oiio.TypeDesc(oiio.FLOAT, oiio.VEC3, oiio.POINT, 2),
                     "FLOAT, VEC3, POINT, array of 2")
+    breakdown_test (oiio.TypeDesc(oiio.INT, oiio.VEC2, oiio.BOX, 2),
+                    "INT, VEC2, BOX, array of 2")
+    breakdown_test (oiio.TypeDesc(oiio.FLOAT, oiio.VEC3, oiio.BOX, 2),
+                    "FLOAT, VEC3, BOX, array of 2")
     print ("")
 
     # Test construction from a string descriptor
     breakdown_test (oiio.TypeDesc("float[2]"), "float[2]")
     breakdown_test (oiio.TypeDesc("normal"), "normal")
     breakdown_test (oiio.TypeDesc("uint16"), "uint16")
+    breakdown_test (oiio.TypeDesc("box3"), "box3")
     print ("")
 
     # Test equality, inequality, and equivalent
@@ -131,30 +142,14 @@ try:
     print ("equivalent(vector,float)", oiio.TypeDesc.equivalent(oiio.TypeDesc("vector"), oiio.TypeDesc("float")))
     print ("")
 
-    # DEPRECATED(1.8): Test the static data member types of pre-constructed types
-    breakdown_test (oiio.TypeDesc.TypeFloat,    "TypeFloat",    verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeColor,    "TypeColor",    verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeString,   "TypeString",   verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeInt,      "TypeInt",      verbose=False)
-    breakdown_test (oiio.TypeDesc.TypePoint,    "TypePoint",    verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeVector,   "TypeVector",   verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeNormal,   "TypeNormal",   verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeMatrix,   "TypeMatrix",   verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeMatrix33, "TypeMatrix33", verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeMatrix44, "TypeMatrix44", verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeTimeCode, "TypeTimeCode", verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeKeyCode,  "TypeKeyCode",  verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeRational, "TypeRational", verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeFloat4,   "TypeFloat4",   verbose=False)
-    breakdown_test (oiio.TypeDesc.TypeHalf,     "TypeHalf",     verbose=False)
-    print ("")
-
     # Test the pre-constructed types
     breakdown_test (oiio.TypeFloat,    "TypeFloat",    verbose=False)
     breakdown_test (oiio.TypeColor,    "TypeColor",    verbose=False)
     breakdown_test (oiio.TypeString,   "TypeString",   verbose=False)
     breakdown_test (oiio.TypeInt,      "TypeInt",      verbose=False)
     breakdown_test (oiio.TypeUInt,     "TypeUInt",     verbose=False)
+    breakdown_test (oiio.TypeInt64,    "TypeInt64",    verbose=False)
+    breakdown_test (oiio.TypeUInt64,   "TypeUInt64",   verbose=False)
     breakdown_test (oiio.TypeInt32,    "TypeInt32",    verbose=False)
     breakdown_test (oiio.TypeUInt32,   "TypeUInt32",   verbose=False)
     breakdown_test (oiio.TypeInt16,    "TypeInt16",    verbose=False)
@@ -169,7 +164,12 @@ try:
     breakdown_test (oiio.TypeMatrix44, "TypeMatrix44", verbose=False)
     breakdown_test (oiio.TypeTimeCode, "TypeTimeCode", verbose=False)
     breakdown_test (oiio.TypeKeyCode,  "TypeKeyCode",  verbose=False)
+    breakdown_test (oiio.TypeFloat2,   "TypeFloat2",   verbose=False)
+    breakdown_test (oiio.TypeVector2,  "TypeVector2",  verbose=False)
     breakdown_test (oiio.TypeFloat4,   "TypeFloat4",   verbose=False)
+    breakdown_test (oiio.TypeVector4,  "TypeVector4",  verbose=False)
+    breakdown_test (oiio.TypeVector2i, "TypeVector2i", verbose=False)
+    breakdown_test (oiio.TypeVector3i, "TypeVector3i", verbose=False)
     breakdown_test (oiio.TypeHalf,     "TypeHalf",     verbose=False)
     breakdown_test (oiio.TypeRational, "TypeRational", verbose=False)
     breakdown_test (oiio.TypeUInt,     "TypeUInt",     verbose=False)

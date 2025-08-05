@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include "py_oiio.h"
 
@@ -45,6 +45,28 @@ ParamValue_from_pyobject(string_view name, TypeDesc type, int nvalues,
             pv.init(name, type, nvalues, interp, &u[0]);
             return pv;
         }
+    } else if (type.basetype == TypeDesc::UINT8 && type.arraylen
+               && py::isinstance<py::bytes>(obj)) {
+        // Special case: converting a "bytes" object to a byte array
+        std::string s = obj.cast<py::bytes>();
+        if (type.arraylen < 0)  // convert un-specified length to real length
+            type.arraylen = int(s.size()) / nvalues;
+        if (type.arraylen * nvalues == int(s.size())) {
+            std::vector<uint8_t> vals((const uint8_t*)s.data(),
+                                      (const uint8_t*)s.data() + s.size());
+            pv.init(name, type, nvalues, interp, vals.data());
+            return pv;
+        }
+    } else if (type.basetype == TypeDesc::UINT8) {
+        std::vector<uint8_t> vals;
+        py_to_stdvector(vals, obj);
+        if (vals.size() >= expected_size) {
+            pv.init(name, type, nvalues, interp, vals.data());
+            return pv;
+        }
+    } else {
+        Strutil::print("ParamValue_from_pyobject not sure how to handle {} {}\n",
+                       name, type);
     }
 
     // I think this is what we should do here when not enough data is
@@ -122,18 +144,19 @@ declare_paramvalue(py::module& m)
 
     py::class_<ParamValue>(m, "ParamValue")
         .def_property_readonly("name",
-                               [](const ParamValue& p) {
-                                   return PY_STR(p.name().string());
+                               [](const ParamValue& self) {
+                                   return PY_STR(self.name().string());
                                })
         .def_property_readonly("type",
-                               [](const ParamValue& p) {
-                                   return PY_STR(p.type().c_str());
+                               [](const ParamValue& self) {
+                                   return self.type();
                                })
         .def_property_readonly("value",
-                               [](const ParamValue& p) {
-                                   return ParamValue_getitem(p, true);
+                               [](const ParamValue& self) {
+                                   return make_pyobject(self.data(),
+                                                        self.type(),
+                                                        self.nvalues());
                                })
-        // .def("__getitem__",       &ParamValue_getitem)
         .def_property_readonly("__len__", &ParamValue::nvalues)
         .def(py::init<const std::string&, int>())
         .def(py::init<const std::string&, float>())
@@ -162,16 +185,28 @@ declare_paramvalue(py::module& m)
                 return self[i];
             },
             py::return_value_policy::reference_internal)
-        .def("__getitem__",
-             [](const ParamValueList& self, const std::string& key) {
-                 auto p = self.find(key);
-                 if (p == self.end())
-                     throw py::key_error("key '" + key + "' does not exist");
-                 return ParamValue_getitem(*p);
-             })
+        // __getitem__ is the dict-like `pvl[key]` lookup
+        .def(
+            "__getitem__",
+            [](const ParamValueList& self, const std::string& key) {
+                auto p = self.find(key);
+                if (p == self.end())
+                    throw py::key_error("key '" + key + "' does not exist");
+                return make_pyobject(p->data(), p->type());
+            },
+            py::return_value_policy::reference_internal)
+        // __setitem__ is the dict-like `pvl[key] = value` assignment
         .def("__setitem__",
              [](ParamValueList& self, const std::string& key, py::object val) {
                  delegate_setitem(self, key, val);
+             })
+        // __delitem__ is the dict-like `del pvl[key]`
+        .def("__delitem__", [](ParamValueList& self,
+                               const std::string& key) { self.remove(key); })
+        // __contains__ is the dict-like `key in pvl`
+        .def("__contains__",
+             [](const ParamValueList& self, const std::string& key) {
+                 return self.contains(key);
              })
         .def("__len__", [](const ParamValueList& p) { return p.size(); })
         .def(

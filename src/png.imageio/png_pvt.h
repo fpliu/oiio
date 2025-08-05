@@ -1,14 +1,14 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #pragma once
 
-#include <png.h>
+#include <libpng16/png.h>
 #include <zlib.h>
 
-#include <OpenEXR/ImathColor.h>
-
+#include <OpenImageIO/Imath.h>
+#include <OpenImageIO/color.h>
 #include <OpenImageIO/dassert.h>
 #include <OpenImageIO/filesystem.h>
 #include <OpenImageIO/fmath.h>
@@ -19,8 +19,8 @@
 #include <OpenImageIO/typedesc.h>
 
 
-#define OIIO_LIBPNG_VERSION                                                    \
-    (PNG_LIBPNG_VER_MAJOR * 10000 + PNG_LIBPNG_VER_MINOR * 100                 \
+#define OIIO_LIBPNG_VERSION                                    \
+    (PNG_LIBPNG_VER_MAJOR * 10000 + PNG_LIBPNG_VER_MINOR * 100 \
      + PNG_LIBPNG_VER_RELEASE)
 
 
@@ -49,11 +49,23 @@ rderr_handler(png_structp png, png_const_charp data)
 {
     ImageInput* inp = (ImageInput*)png_get_error_ptr(png);
     if (inp && data)
-        inp->errorf("PNG read error: %s", data);
+        inp->errorfmt("PNG read error: {}", data);
 }
 
 
-static void rdwarn_handler(png_structp /*png*/, png_const_charp /*data*/) {}
+static void
+wrerr_handler(png_structp png, png_const_charp data)
+{
+    ImageOutput* outp = (ImageOutput*)png_get_error_ptr(png);
+    if (outp && data)
+        outp->errorfmt("PNG write error: {}", data);
+}
+
+
+static void
+null_png_handler(png_structp /*png*/, png_const_charp /*data*/)
+{
+}
 
 
 
@@ -64,11 +76,11 @@ inline const std::string
 create_read_struct(png_structp& sp, png_infop& ip, ImageInput* inp = nullptr)
 {
     sp = png_create_read_struct(PNG_LIBPNG_VER_STRING, inp, rderr_handler,
-                                rdwarn_handler);
+                                null_png_handler);
     if (!sp)
         return "Could not create PNG read structure";
 
-    png_set_error_fn(sp, inp, rderr_handler, rdwarn_handler);
+    png_set_error_fn(sp, inp, rderr_handler, null_png_handler);
     ip = png_create_info_struct(sp);
     if (!ip)
         return "Could not create PNG info structure";
@@ -117,6 +129,55 @@ get_background(png_structp& sp, png_infop& ip, ImageSpec& spec, int& bit_depth,
 
 
 
+inline int
+hex2int(char a)
+{
+    return a <= '9' ? a - '0' : tolower(a) - 'a' + 10;
+}
+
+
+
+// Recent libpng (>= 1.6.32) supports direct Exif chunks. But the old way
+// is more common, which is to embed it in a Text field (like a comment).
+// This decodes that raw text data, which is a string,that looks like:
+//
+//     <whitespace> exif
+//     <whitespace> <integer size>
+//     <72 hex digits>
+//     ...more lines of 72 hex digits...
+//
+static bool
+decode_png_text_exif(string_view raw, ImageSpec& spec)
+{
+    // Strutil::print("Found exif raw len={} '{}{}'\n", raw.size(),
+    //                raw.substr(0,200), raw.size() > 200 ? "..." : "");
+
+    Strutil::skip_whitespace(raw);
+    if (!Strutil::parse_prefix(raw, "exif"))
+        return false;
+    int rawlen = 0;
+    if (!Strutil::parse_int(raw, rawlen) || !rawlen)
+        return false;
+    Strutil::skip_whitespace(raw);
+    std::string decoded;  // Converted from hex to bytes goes here
+    decoded.reserve(raw.size() / 2 + 1);
+    while (raw.size() >= 2) {
+        if (!isxdigit(raw.front())) {  // not hex digit? skip
+            raw.remove_prefix(1);
+            continue;
+        }
+        int c = (hex2int(raw[0]) << 4) | hex2int(raw[1]);
+        decoded.append(1, char(c));
+        raw.remove_prefix(2);
+    }
+    if (Strutil::istarts_with(decoded, "Exif")) {
+        decode_exif(decoded, spec);
+    }
+    return false;
+}
+
+
+
 /// Read information from a PNG file and fill the ImageSpec accordingly.
 ///
 inline bool
@@ -125,8 +186,12 @@ read_info(png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
           bool keep_unassociated_alpha)
 {
     // Must call this setjmp in every function that does PNG reads
-    if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+    if (setjmp(png_jmpbuf(sp))) {  // NOLINT(cert-err52-cpp)
+        ImageInput* pnginput = (ImageInput*)png_get_io_ptr(sp);
+        if (!pnginput->has_error())
+            pnginput->errorfmt("Could not read info from file");
         return false;
+    }
 
     bool ok = true;
     png_read_info(sp, ip);
@@ -157,67 +222,72 @@ read_info(png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
     }
 
     int srgb_intent;
+    double gamma = 0.0;
     if (png_get_sRGB(sp, ip, &srgb_intent)) {
-        spec.attribute("oiio:ColorSpace", "sRGB");
+        spec.set_colorspace("sRGB");
+    } else if (png_get_gAMA(sp, ip, &gamma) && gamma > 0.0) {
+        // Round gamma to the nearest hundredth to prevent stupid
+        // precision choices and make it easier for apps to make
+        // decisions based on known gamma values. For example, you want
+        // 2.2, not 2.19998.
+        float g = float(1.0 / gamma);
+        g       = roundf(100.0f * g) / 100.0f;
+        set_colorspace_rec709_gamma(spec, g);
     } else {
-        double gamma;
-        if (png_get_gAMA(sp, ip, &gamma)) {
-            // Round gamma to the nearest hundredth to prevent stupid
-            // precision choices and make it easier for apps to make
-            // decisions based on known gamma values. For example, you want
-            // 2.2, not 2.19998.
-            float g = float(1.0 / gamma);
-            g       = roundf(100.0 * g) / 100.0f;
-            spec.attribute("oiio:Gamma", g);
-            if (g == 1.0f)
-                spec.attribute("oiio:ColorSpace", "linear");
-            else
-                spec.attribute("oiio:ColorSpace",
-                               Strutil::sprintf("GammaCorrected%.2g", g));
-        }
+        // If there's no info at all, assume sRGB.
+        set_colorspace(spec, "sRGB");
     }
 
     if (png_get_valid(sp, ip, PNG_INFO_iCCP)) {
-        png_charp profile_name = NULL;
-#if OIIO_LIBPNG_VERSION > 10500 /* PNG function signatures changed */
-        png_bytep profile_data = NULL;
-#else
-        png_charp profile_data = NULL;
-#endif
+        png_charp profile_name     = nullptr;
+        png_bytep profile_data     = nullptr;
         png_uint_32 profile_length = 0;
         int compression_type;
         png_get_iCCP(sp, ip, &profile_name, &compression_type, &profile_data,
                      &profile_length);
-        if (profile_length && profile_data)
-            spec.attribute(ICC_PROFILE_ATTR,
+        if (profile_length && profile_data) {
+            spec.attribute("ICCProfile",
                            TypeDesc(TypeDesc::UINT8, profile_length),
                            profile_data);
+            std::string errormsg;
+            bool ok
+                = decode_icc_profile(make_cspan(profile_data, profile_length),
+                                     spec, errormsg);
+            if (!ok && OIIO::get_int_attribute("imageinput:strict")) {
+                errorfmt("Could not decode ICC profile: {}\n", errormsg);
+                return false;
+            }
+        }
     }
 
     png_timep mod_time;
     if (png_get_tIME(sp, ip, &mod_time)) {
-        std::string date = Strutil::sprintf("%4d:%02d:%02d %02d:%02d:%02d",
-                                            mod_time->year, mod_time->month,
-                                            mod_time->day, mod_time->hour,
-                                            mod_time->minute, mod_time->second);
+        std::string date
+            = Strutil::fmt::format("{:4d}:{:02d}:{:02d} {:02d}:{:02d}:{:02d}",
+                                   mod_time->year, mod_time->month,
+                                   mod_time->day, mod_time->hour,
+                                   mod_time->minute, mod_time->second);
         spec.attribute("DateTime", date);
     }
 
     png_textp text_ptr;
     int num_comments = png_get_text(sp, ip, &text_ptr, NULL);
-    if (num_comments) {
-        std::string comments;
-        for (int i = 0; i < num_comments; ++i) {
-            if (Strutil::iequals(text_ptr[i].key, "Description"))
-                spec.attribute("ImageDescription", text_ptr[i].text);
-            else if (Strutil::iequals(text_ptr[i].key, "Author"))
-                spec.attribute("Artist", text_ptr[i].text);
-            else if (Strutil::iequals(text_ptr[i].key, "Title"))
-                spec.attribute("DocumentName", text_ptr[i].text);
-            else if (Strutil::iequals(text_ptr[i].key, "XML:com.adobe.xmp"))
-                decode_xmp(text_ptr[i].text, spec);
-            else
-                spec.attribute(text_ptr[i].key, text_ptr[i].text);
+    for (int i = 0; i < num_comments; ++i) {
+        if (Strutil::iequals(text_ptr[i].key, "Description"))
+            spec.attribute("ImageDescription", text_ptr[i].text);
+        else if (Strutil::iequals(text_ptr[i].key, "Author"))
+            spec.attribute("Artist", text_ptr[i].text);
+        else if (Strutil::iequals(text_ptr[i].key, "Title"))
+            spec.attribute("DocumentName", text_ptr[i].text);
+        else if (Strutil::iequals(text_ptr[i].key, "XML:com.adobe.xmp"))
+            decode_xmp(text_ptr[i].text, spec);
+        else if (Strutil::iequals(text_ptr[i].key, "Raw profile type exif")) {
+            // Most PNG files seem to encode Exif by cramming it into a text
+            // field, with the key "Raw profile type exif" and then a special
+            // text encoding that we handle with the following function:
+            decode_png_text_exif(text_ptr[i].text, spec);
+        } else {
+            spec.attribute(text_ptr[i].key, text_ptr[i].text);
         }
     }
     spec.x = png_get_x_offset_pixels(sp, ip);
@@ -226,15 +296,22 @@ read_info(png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
     int unit;
     png_uint_32 resx, resy;
     if (png_get_pHYs(sp, ip, &resx, &resy, &unit)) {
-        float scale = 1;
         if (unit == PNG_RESOLUTION_METER) {
             // Convert to inches, to match most other formats
-            scale = 2.54 / 100.0;
+            float scale = 2.54f / 100.0f;
+            float rx    = resx * scale;
+            float ry    = resy * scale;
+            // Round to nearest 0.1
+            rx = std::round(10.0f * rx) / 10.0f;
+            ry = std::round(10.0f * ry) / 10.0f;
             spec.attribute("ResolutionUnit", "inch");
-        } else
+            spec.attribute("XResolution", rx);
+            spec.attribute("YResolution", ry);
+        } else {
             spec.attribute("ResolutionUnit", "none");
-        spec.attribute("XResolution", (float)resx * scale);
-        spec.attribute("YResolution", (float)resy * scale);
+            spec.attribute("XResolution", (float)resx);
+            spec.attribute("YResolution", (float)resy);
+        }
     }
 
     float aspect = (float)png_get_pixel_aspect_ratio(sp, ip);
@@ -248,6 +325,18 @@ read_info(png_structp& sp, png_infop& ip, int& bit_depth, int& color_type,
     }
 
     interlace_type = png_get_interlace_type(sp, ip);
+
+#ifdef PNG_eXIf_SUPPORTED
+    // Recent version of PNG and libpng (>= 1.6.32, I think) have direct
+    // support for Exif chunks. Older versions don't support it, and I'm not
+    // sure how common it is. Most files use the old way, which is the
+    // text embedding of Exif we handle with decode_png_text_exif.
+    png_uint_32 num_exif = 0;
+    png_bytep exif_data  = nullptr;
+    if (png_get_eXIf_1(sp, ip, &num_exif, &exif_data)) {
+        decode_exif(cspan<uint8_t>(exif_data, span_size_t(num_exif)), spec);
+    }
+#endif
 
     // PNG files are always "unassociated alpha" but we convert to associated
     // unless requested otherwise
@@ -268,6 +357,10 @@ inline const std::string
 read_into_buffer(png_structp& sp, png_infop& ip, ImageSpec& spec,
                  std::vector<unsigned char>& buffer)
 {
+    // Temp space for the row pointers. Must be declared before the setjmp
+    // to ensure it's destroyed if the jump is taken.
+    std::vector<unsigned char*> row_pointers(spec.height);
+
     // Must call this setjmp in every function that does PNG reads
     if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
         return "PNG library error";
@@ -283,12 +376,10 @@ read_into_buffer(png_structp& sp, png_infop& ip, ImageSpec& spec,
 
     OIIO_DASSERT(spec.scanline_bytes() == png_get_rowbytes(sp, ip));
     buffer.resize(spec.image_bytes());
-
-    std::vector<unsigned char*> row_pointers(spec.height);
     for (int i = 0; i < spec.height; ++i)
-        row_pointers[i] = &buffer[0] + i * spec.scanline_bytes();
+        row_pointers[i] = buffer.data() + i * spec.scanline_bytes();
 
-    png_read_image(sp, &row_pointers[0]);
+    png_read_image(sp, row_pointers.data());
     png_read_end(sp, NULL);
 
     // success
@@ -328,26 +419,19 @@ destroy_read_struct(png_structp& sp, png_infop& ip)
 }
 
 
-inline void null_png_errhandler(png_structp /*png*/,
-                                png_const_charp /*message*/)
-{
-    // ignore
-}
-
-
 
 /// Initializes a PNG write struct.
 /// \return empty string on success, C-string error message on failure.
 ///
 inline const std::string
 create_write_struct(png_structp& sp, png_infop& ip, int& color_type,
-                    ImageSpec& spec)
+                    ImageSpec& spec, ImageOutput* outp = nullptr)
 {
     // Check for things this format doesn't support
     if (spec.width < 1 || spec.height < 1)
-        return Strutil::sprintf("Image resolution must be at least 1x1, "
-                                "you asked for %d x %d",
-                                spec.width, spec.height);
+        return Strutil::fmt::format("Image resolution must be at least 1x1, "
+                                    "you asked for {} x {}",
+                                    spec.width, spec.height);
     if (spec.depth < 1)
         spec.depth = 1;
     if (spec.depth > 1)
@@ -371,14 +455,14 @@ create_write_struct(png_structp& sp, png_infop& ip, int& color_type,
         spec.alpha_channel = 3;
         break;
     default:
-        return Strutil::sprintf("PNG only supports 1-4 channels, not %d",
-                                spec.nchannels);
+        return Strutil::fmt::format("PNG only supports 1-4 channels, not {}",
+                                    spec.nchannels);
     }
     // N.B. PNG is very rigid about the meaning of the channels, so enforce
     // which channel is alpha, that's the only way PNG can do it.
 
-    sp = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr,
-                                 null_png_errhandler, nullptr);
+    sp = png_create_write_struct(PNG_LIBPNG_VER_STRING, outp, wrerr_handler,
+                                 null_png_handler);
     if (!sp)
         return "Could not create PNG write structure";
 
@@ -429,9 +513,8 @@ put_parameter(png_structp& sp, png_infop& ip, const std::string& _name,
     if (Strutil::iequals(name, "DateTime") && type == TypeDesc::STRING) {
         png_time mod_time;
         int year, month, day, hour, minute, second;
-        if (sscanf(*(const char**)data, "%4d:%02d:%02d %02d:%02d:%02d", &year,
-                   &month, &day, &hour, &minute, &second)
-            == 6) {
+        if (Strutil::scan_datetime(*(const char**)data, year, month, day, hour,
+                                   minute, second)) {
             mod_time.year   = year;
             mod_time.month  = month;
             mod_time.day    = day;
@@ -485,10 +568,12 @@ put_parameter(png_structp& sp, png_infop& ip, const std::string& _name,
 
 
 /// Writes PNG header according to the ImageSpec.
+/// \return empty string on success, error message on failure.
 ///
-inline void
+inline const std::string
 write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
-           std::vector<png_text>& text, bool& convert_alpha, float& gamma)
+           std::vector<png_text>& text, bool& convert_alpha, bool& srgb,
+           float& gamma)
 {
     // Force either 16 or 8 bit integers
     if (spec.format == TypeDesc::UINT8 || spec.format == TypeDesc::INT8)
@@ -496,10 +581,14 @@ write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
     else
         spec.set_format(TypeDesc::UINT16);  // best precision available
 
+    if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+        return "Could not set PNG IHDR chunk";
     png_set_IHDR(sp, ip, spec.width, spec.height, spec.format.size() * 8,
                  color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
                  PNG_FILTER_TYPE_DEFAULT);
 
+    if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+        return "Could not set PNG oFFs chunk";
     png_set_oFFs(sp, ip, spec.x, spec.y, PNG_OFFSET_PIXEL);
 
     // PNG specifically dictates unassociated (un-"premultiplied") alpha
@@ -508,34 +597,53 @@ write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
 
     gamma = spec.get_float_attribute("oiio:Gamma", 1.0);
 
-    std::string colorspace = spec.get_string_attribute("oiio:ColorSpace");
-    if (Strutil::iequals(colorspace, "Linear")) {
+    const ColorConfig& colorconfig = ColorConfig::default_colorconfig();
+    string_view colorspace = spec.get_string_attribute("oiio:ColorSpace");
+    if (colorconfig.equivalent(colorspace, "scene_linear")
+        || colorconfig.equivalent(colorspace, "lin_rec709")) {
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG gAMA chunk";
         png_set_gAMA(sp, ip, 1.0);
-    } else if (Strutil::istarts_with(colorspace, "GammaCorrected")) {
-        float g = Strutil::from_string<float>(colorspace.c_str() + 14);
+        srgb = false;
+    } else if (Strutil::istarts_with(colorspace, "Gamma")) {
+        Strutil::parse_word(colorspace);
+        float g = Strutil::from_string<float>(colorspace);
         if (g >= 0.01f && g <= 10.0f /* sanity check */)
             gamma = g;
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG gAMA chunk";
         png_set_gAMA(sp, ip, 1.0f / gamma);
-    } else if (Strutil::iequals(colorspace, "sRGB")) {
+        srgb = false;
+    } else if (colorconfig.equivalent(colorspace, "g22_rec709")) {
+        gamma = 2.2f;
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG gAMA chunk";
+        png_set_gAMA(sp, ip, 1.0f / gamma);
+        srgb = false;
+    } else if (colorconfig.equivalent(colorspace, "g18_rec709")) {
+        gamma = 1.8f;
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG gAMA chunk";
+        png_set_gAMA(sp, ip, 1.0f / gamma);
+        srgb = false;
+    } else if (colorconfig.equivalent(colorspace, "sRGB")) {
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG gAMA and cHRM chunk";
         png_set_sRGB_gAMA_and_cHRM(sp, ip, PNG_sRGB_INTENT_ABSOLUTE);
+        srgb = true;
     }
 
     // Write ICC profile, if we have anything
     const ParamValue* icc_profile_parameter = spec.find_attribute(
         ICC_PROFILE_ATTR);
-    if (icc_profile_parameter != NULL) {
+    if (icc_profile_parameter != nullptr) {
         unsigned int length = icc_profile_parameter->type().size();
-#if OIIO_LIBPNG_VERSION > 10500 /* PNG function signatures changed */
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG iCCP chunk";
         unsigned char* icc_profile
             = (unsigned char*)icc_profile_parameter->data();
         if (icc_profile && length)
             png_set_iCCP(sp, ip, "Embedded Profile", 0, icc_profile, length);
-#else
-        char* icc_profile      = (char*)icc_profile_parameter->data();
-        if (icc_profile && length)
-            png_set_iCCP(sp, ip, (png_charp) "Embedded Profile", 0, icc_profile,
-                         length);
-#endif
     }
 
     if (false && !spec.find_attribute("DateTime")) {
@@ -543,11 +651,11 @@ write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
         time(&now);
         struct tm mytm;
         Sysutil::get_local_time(&now, &mytm);
-        std::string date = Strutil::sprintf("%4d:%02d:%02d %02d:%02d:%02d",
-                                            mytm.tm_year + 1900,
-                                            mytm.tm_mon + 1, mytm.tm_mday,
-                                            mytm.tm_hour, mytm.tm_min,
-                                            mytm.tm_sec);
+        std::string date
+            = Strutil::fmt::format("{:4d}:{:02d}:{:02d} {:02d}:{:02d}:{:02d}",
+                                   mytm.tm_year + 1900, mytm.tm_mon + 1,
+                                   mytm.tm_mday, mytm.tm_hour, mytm.tm_min,
+                                   mytm.tm_sec);
         spec.attribute("DateTime", date);
     }
 
@@ -584,9 +692,18 @@ write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
         } else if (yres == 0.0f) {
             yres = xres * (paspect ? paspect : 1.0f);
         }
+        if (setjmp(png_jmpbuf(sp)))  // NOLINT(cert-err52-cpp)
+            return "Could not set PNG pHYs chunk";
         png_set_pHYs(sp, ip, (png_uint_32)(xres * scale),
                      (png_uint_32)(yres * scale), unittype);
     }
+
+#ifdef PNG_eXIf_SUPPORTED
+    std::vector<char> exifBlob;
+    encode_exif(spec, exifBlob, endian::big);
+    png_set_eXIf_1(sp, ip, static_cast<png_uint_32>(exifBlob.size()),
+                   reinterpret_cast<png_bytep>(exifBlob.data()));
+#endif
 
     // Deal with all other params
     for (size_t p = 0; p < spec.extra_attribs.size(); ++p)
@@ -599,6 +716,8 @@ write_info(png_structp& sp, png_infop& ip, int& color_type, ImageSpec& spec,
 
     png_write_info(sp, ip);
     png_set_packing(sp);  // Pack 1, 2, 4 bit into bytes
+
+    return "";
 }
 
 
@@ -618,20 +737,48 @@ write_row(png_structp& sp, png_byte* data)
 
 
 
-/// Helper function - finalizes writing the image and destroy the write
-/// struct.
+/// Write scanlines
+inline bool
+write_rows(png_structp& sp, png_byte* data, int nrows = 0, stride_t ystride = 0)
+{
+    if (setjmp(png_jmpbuf(sp))) {  // NOLINT(cert-err52-cpp)
+        //error ("PNG library error");
+        return false;
+    }
+    if (nrows == 1) {
+        png_write_row(sp, data);
+    } else {
+        png_byte** ptrs = OIIO_ALLOCA(png_byte*, nrows);
+        for (int i = 0; i < nrows; ++i)
+            ptrs[i] = data + i * ystride;
+        png_write_rows(sp, ptrs, png_uint_32(nrows));
+    }
+    return true;
+}
+
+
+
+/// Helper function - error-catching wrapper for png_write_end
 inline void
-finish_image(png_structp& sp, png_infop& ip)
+write_end(png_structp& sp, png_infop& ip)
 {
     // Must call this setjmp in every function that does PNG writes
     if (setjmp(png_jmpbuf(sp))) {  // NOLINT(cert-err52-cpp)
-        //error ("PNG library error");
         return;
     }
     png_write_end(sp, ip);
+}
+
+
+/// Helper function - error-catching wrapper for png_destroy_write_struct
+inline void
+destroy_write_struct(png_structp& sp, png_infop& ip)
+{
+    // Must call this setjmp in every function that does PNG writes
+    if (setjmp(png_jmpbuf(sp))) {  // NOLINT(cert-err52-cpp)
+        return;
+    }
     png_destroy_write_struct(&sp, &ip);
-    sp = nullptr;
-    ip = nullptr;
 }
 
 

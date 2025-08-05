@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 
-# FIXME -- eventually, we want more (all?) of these to work
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 
 outputs = []
 imagedir = OIIO_TESTSUITE_IMAGEDIR + "/depth"
@@ -18,7 +21,7 @@ files = [
     "flower-palette-02.tif",   #73x43 4-entry colormapped image
     "flower-palette-04.tif",   #73x43 16-entry colormapped image
     "flower-palette-08.tif",   #73x43 256-entry colormapped image
-    #FIXME "flower-palette-16.tif",   # 73x43 65536-entry colormapped image
+    "flower-palette-16.tif",   # 73x43 65536-entry colormapped image
     "flower-rgb-contig-02.tif",   #  73x43 2-bit contiguous RGB image
     "flower-rgb-contig-04.tif",   #  73x43 4-bit contiguous RGB image
     "flower-rgb-contig-08.tif",   #  73x43 8-bit contiguous RGB image

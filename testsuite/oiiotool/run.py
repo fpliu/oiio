@@ -1,4 +1,13 @@
 #!/usr/bin/env python
+import os
+import shutil
+
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+redirect += " 2>&1"
+failureok = True
 
 # Create some test images we need
 command += oiiotool ("--create 320x240 3 -d uint8 -o black.tif")
@@ -17,9 +26,9 @@ command += oiiotool ("filled.tif --colorcount:eps=.1,.1,.1 0,0,0:1,.5,.5:0,1,0")
 command += oiiotool ("filled.tif --rangecheck 0,0,0 1,0.9,1")
 
 # test --rangecompress & --rangeexpand
-command += oiiotool ("src/tahoe-small.tif --rangecompress -d uint8 -o rangecompress.tif")
+command += oiiotool ("../common/tahoe-small.tif --rangecompress -d uint8 -o rangecompress.tif")
 command += oiiotool ("rangecompress.tif --rangeexpand -d uint8 -o rangeexpand.tif")
-command += oiiotool ("src/tahoe-small.tif --rangecompress:luma=1 -d uint8 -o rangecompress-luma.tif")
+command += oiiotool ("../common/tahoe-small.tif --rangecompress:luma=1 -d uint8 -o rangecompress-luma.tif")
 command += oiiotool ("rangecompress-luma.tif --rangeexpand:luma=1 -d uint8 -o rangeexpand-luma.tif")
 
 # Test --add
@@ -37,6 +46,11 @@ command += oiiotool ("--pattern constant:color=.1,.2,.3 64x64+0+0 3 "
             + " --sub -d half -o sub.exr")
 command += oiiotool ("--pattern constant:color=.1,.2,.3 64x64+0+0 3 "
             + " --subc 0.1,0.1,0.1 -d half -o subc.exr")
+            
+# Test -- scale
+command += oiiotool ("--pattern fill:topleft=0,0,1:topright=0,1,0:bottomleft=1,0,1:bottomright=1,1,0 64x64 3"
+            + " --pattern fill:top=0:bottom=1 64x64 1"
+            + " --scale -o scale.exr")
 
 # test --mul of images
 command += oiiotool ("grey64.exr -pattern constant:color=1.5,1,0.5 64x64 3 --mul -o mul.exr")
@@ -58,12 +72,20 @@ command += oiiotool ("grey64.exr -pattern constant:color=1.5,1,0.5 64x64 3 "
                    + "-pattern constant:color=.1,.1,.1 64x64 3 --mad -o mad.exr")
 
 # test --invert
-command += oiiotool ("src/tahoe-small.tif --invert -o invert.tif")
+command += oiiotool ("../common/tahoe-small.tif --invert -o invert.tif")
 
 # Test --powc val (raise all channels by the same power)
 command += oiiotool ("grey128.exr --powc 2 -o cpow1.exr")
 # Test --powc val,val,val... (per-channel powers)
 command += oiiotool ("grey128.exr --powc 2,2,1 -o cpow2.exr")
+
+# Test --normalize
+command += oiiotool ("src/norm.exr --normalize -o normalize.exr " +
+                     "src/norm.exr --normalize:scale=0.5 -o normalize_scale.exr " +
+                     "src/normoffset.exr --normalize:incenter=0.5 -o normalize_offsetin.exr " +
+                     "src/norm.exr --normalize:outcenter=0.5:scale=0.5 -o normalize_offsetscaleout.exr " +
+                     "src/normoffset.exr --normalize:incenter=0.5:outcenter=0.5:scale=0.5 -o normalize_offsetscale.exr ")
+
 
 # Test --abs, --absdiff, --absdiffc
 # First, make a test image that's 0.5 on the left, -0.5 on the right
@@ -76,14 +98,8 @@ command += oiiotool ("negpos.exr -pattern constant:color=0.2,0.2,0.2 128x128 3 "
 command += oiiotool ("negpos.exr -absdiffc 0.2,0.2,0.2 -d half -o absdiffc.exr")
 
 # test --chsum
-command += oiiotool ("src/tahoe-small.tif --chsum:weight=.2126,.7152,.0722 "
+command += oiiotool ("../common/tahoe-small.tif --chsum:weight=.2126,.7152,.0722 "
             + "-d uint8 -o chsum.tif")
-
-# test histogram generation
-command += oiiotool ("ref/histogram_input.png --histogram 256x256 0 "
-            + "-o histogram_regular.tif")
-command += oiiotool ("ref/histogram_input.png --histogram:cumulative=1 256x256 0 "
-            + "-o histogram_cumulative.tif")
 
 # test --trim
 command += oiiotool ("--create 320x240 3 -fill:color=.1,.5,.1 120x80+50+70 "
@@ -93,30 +109,6 @@ command += oiiotool ("--create 320x240 3 -fill:color=.1,.5,.1 120x80+50+70 "
 command += oiiotool (  "-a --create 320x240 3 -fill:color=.1,.5,.1 120x80+50+70 -rotate 30 "
                      + "--create 320x240 3 -fill:color=.5,.5,.1 100x10+70+70 -rotate 140 "
                      + "--siappend -trim -origin +0+0 -fullpixels -d uint8 -o trimsubimages.tif")
-
-# test channel shuffling
-command += oiiotool (OIIO_TESTSUITE_IMAGEDIR + "/grid.tif"
-            + " --ch =0.25,B,G -o chanshuffle.tif")
-
-# test --ch to separate RGBA from an RGBAZ file
-command += oiiotool ("src/rgbaz.exr --ch R,G,B,A -o ch-rgba.exr")
-command += oiiotool ("src/rgbaz.exr --ch Z -o ch-z.exr")
-
-# test --chappend to merge RGBA and Z
-command += oiiotool ("ch-rgba.exr ch-z.exr --chappend -o chappend-rgbaz.exr")
-
-# test --chnames to rename channels
-command += oiiotool ("src/rgbaz.exr --chnames Red,,,,Depth -o chname.exr")
-command += info_command ("chname.exr", safematch=1)
-
-# test -d to change data formats
-command += oiiotool ("src/rgbaz.exr -d half -o allhalf.exr")
-command += info_command ("allhalf.exr", safematch=1)
-
-# test -d NAME=fmt to change data format of one channel, and to make
-# sure oiiotool will output per-channel formats.
-command += oiiotool ("src/rgbaz.exr -d half -d Z=float -o rgbahalf-zfloat.exr")
-command += info_command ("rgbahalf-zfloat.exr", safematch=1)
 
 # test hole filling
 command += oiiotool ("ref/hole.tif --fillholes -o tahoe-filled.tif")
@@ -141,22 +133,28 @@ command += oiiotool ("--pattern fill:top=0,0,0:bottom=1,1,1 64x64 3 "
 command += oiiotool ("--pattern fill:top=0,0,0:bottom=1,1,1 64x64 3 "
                    + "--maxc 0.75,0.5,0.25 -o cmax2.exr")
 
+# test --maxchan, --minchan
+command += oiiotool ("--pattern fill:topleft=0,0,0.2:topright=1,0,0.2:bottomleft=0,1,0.2:bottomright=1,1,0.2 100x100 3 " +
+                        " --maxchan -d uint8 -o maxchan.tif")
+command += oiiotool ("--pattern fill:topleft=0,0,0.8:topright=1,0,0.8:bottomleft=0,1,0.8:bottomright=1,1,0.8 100x100 3 " +
+                        " --minchan -d uint8 -o minchan.tif")
+
 # test clamping
-command += oiiotool (OIIO_TESTSUITE_IMAGEDIR + "/grid.tif --resize 50%"
+command += oiiotool ("../common/grid.tif --resize 50%"
             + " --clamp:min=0.2:max=,,0.5,1 -o grid-clamped.tif")
 
 # test kernel
 command += oiiotool ("--kernel bspline 15x15 -o bsplinekernel.exr")
 
 # test convolve
-command += oiiotool ("src/tahoe-small.tif --kernel bspline 15x15 --convolve "
+command += oiiotool ("../common/tahoe-small.tif --kernel bspline 15x15 --convolve "
             + "-d uint8 -o bspline-blur.tif")
 
 # test blur
-command += oiiotool ("src/tahoe-small.tif --blur 5x5 -d uint8 -o gauss5x5-blur.tif")
+command += oiiotool ("../common/tahoe-small.tif --blur 5x5 -d uint8 -o gauss5x5-blur.tif")
 
 # test median filter
-command += oiiotool ("src/tahoe-small.tif --median 5x5 -d uint8 -o tahoe-median.tif")
+command += oiiotool ("../common/tahoe-small.tif --median 5x5 -d uint8 -o tahoe-median.tif")
 
 # test dilate and erode
 # command += oiiotool ("--pattern constant:color=0.1,0.1,0.1 80x64 3 --text:x=8:y=54:size=40:font=DroidSerif Aai -o morphsource.tif")
@@ -168,16 +166,16 @@ command += oiiotool ("src/morphsource.tif --erode 3x3 -d uint8 -o erode.tif")
 # command += oiiotool ("morphclose.tif morphsource.tif -sub -d uint8 -o bottomhat.tif")
 
 # test unsharp mask
-command += oiiotool ("src/tahoe-small.tif --unsharp -d uint8 -o unsharp.tif")
+command += oiiotool ("../common/tahoe-small.tif --unsharp -d uint8 -o unsharp.tif")
 
 # test unsharp mask with median filter
-command += oiiotool ("src/tahoe-small.tif --unsharp:kernel=median -d uint8 -o unsharp-median.tif")
+command += oiiotool ("../common/tahoe-small.tif --unsharp:kernel=median -d uint8 -o unsharp-median.tif")
 
 # test laplacian
-command += oiiotool ("src/tahoe-tiny.tif --laplacian -d uint8 -o tahoe-laplacian.tif")
+command += oiiotool ("../common/tahoe-tiny.tif --laplacian -d uint8 -o tahoe-laplacian.tif")
 
 # test fft, ifft
-command += oiiotool ("src/tahoe-tiny.tif --ch 2 --fft -d float -o fft.exr")
+command += oiiotool ("../common/tahoe-tiny.tif --ch 2 --fft -d float -o fft.exr")
 command += oiiotool ("fft.exr --ifft --ch 0 -d float -o ifft.exr")
 
 # test --polar, --unpolar
@@ -192,7 +190,8 @@ command += oiiotool (
             " --pattern constant:color=0.5,0.0,0.0 128x128 3 --label B " +
             " --pop --pop --pop " +
             " R G --add -d half -o labeladd.exr")
-
+command += oiiotool ('-echo "This should make an error:" ' +
+                     '--create 1x1 3 --label 2hot2handle -o out.tif')
 
 # test subimages
 command += oiiotool ("--pattern constant:color=0.5,0.0,0.0 64x64 3 " +
@@ -205,34 +204,21 @@ command += oiiotool ("--pattern constant:color=0.5,0.0,0.0 64x64 3 --text A -att
                      "--siappendall -d half -o subimages-4.exr")
 command += oiiotool ("subimages-4.exr --subimage 3 -o subimageD3.exr")
 command += oiiotool ("subimages-4.exr --subimage layerB -o subimageB1.exr")
+command += oiiotool ("subimages-4.exr --subimage:delete=1 layerB -o subimage-noB.exr")
 command += oiiotool ("subimages-2.exr --sisplit -o subimage2.exr " +
                      "--pop -o subimage1.exr")
+command += oiiotool ("subimages-4.exr -cmul:subimages=0,2 0.5 -o subimage-individual.exr")
 
-# test sequences
-command += oiiotool ("src/tahoe-tiny.tif -o copyA.1-10#.jpg")
-command += oiiotool (" --info  " +  " ".join(["copyA.{0:04}.jpg".format(x) for x in range(1,11)]))
-command += oiiotool ("--frames 1-5 --echo \"Sequence 1-5:  {FRAME_NUMBER}\"")
-command += oiiotool ("--frames -5-5 --echo \"Sequence -5-5:  {FRAME_NUMBER}\"")
-command += oiiotool ("--frames -5--2 --echo \"Sequence -5--2:  {FRAME_NUMBER}\"")
-
-# test expression substitution
-command += oiiotool ('-echo "16+5={16+5}" -echo "16-5={16-5}" -echo "16*5={16*5}"')
-command += oiiotool ('-echo "16/5={16/5}" -echo "16//5={16//5}" -echo "16%5={16%5}"')
-command += oiiotool ("src/tahoe-small.tif --pattern fill:top=0,0,0,0:bottom=0,0,1,1 " +
-                     "{TOP.geom} {TOP.nchannels} -d uint8 -o exprgradient.tif")
-command += oiiotool ("src/tahoe-small.tif -cut '{TOP.width-20* 2}x{TOP.height-40+(4*2- 2 ) /6-1}+{TOP.x+100.5-80.5 }+{TOP.y+20}' -d uint8 -o exprcropped.tif")
-command += oiiotool ("src/tahoe-small.tif -o exprstrcat{TOP.compression}.tif")
-command += oiiotool ("src/tahoe-tiny.tif -subc '{TOP.MINCOLOR}' -divc '{TOP.MAXCOLOR}' -o tahoe-contraststretch.tif")
-# test use of quotes inside evaluation, {TOP.foo/bar} would ordinarily want
-# to interpret '/' for division, but we want to look up metadata called
-# 'foo/bar'.
-command += oiiotool ("-create 16x16 3 -attrib \"foo/bar\" \"xyz\" -echo \"{TOP.'foo/bar'} should say xyz\"")
-command += oiiotool ("-create 16x16 3 -attrib smpte:TimeCode \"01:02:03:04\" -echo \"timecode is {TOP.'smpte:TimeCode'}\"")
-# Ensure that --evaloff/--evalon work
-command += oiiotool ("-echo \"{1+1}\" --evaloff -echo \"{3+4}\" --evalon -echo \"{2*2}\"")
+# Test --printstats
+command += oiiotool ("../common/tahoe-tiny.tif --echo \"--printstats:\" --printstats:native=1")
+command += oiiotool ("../common/tahoe-tiny.tif --printstats:natve=1:window=10x10+50+50 --echo \" \"")
 
 # test --iconfig
-command += oiiotool ("--info -v -metamatch Debug --iconfig oiio:DebugOpenConfig! 1 black.tif")
+command += oiiotool ("--info -v -metamatch Debug --iconfig oiio:DebugOpenConfig! 1 " +
+                     "--iconfig:type=float oiio:DebugOpenConfigInt! 2 " +
+                     "--iconfig:type=float oiio:DebugOpenConfigFloat! 3 " +
+                     "--iconfig:type=string oiio:DebugOpenConfigStr! 4 " +
+                     "black.tif")
 
 # test -i:ch=...
 command += oiiotool ("--pattern fill:color=.6,.5,.4,.3,.2 64x64 5 -d uint8 -o const5.tif")
@@ -243,6 +229,29 @@ command += oiiotool ("-i:ch=R,G,B const5.tif -o const5-rgb.tif")
 command += oiiotool ("-pattern constant:color=1,0,0 64x64 3 -pattern constant:color=0,1,0,1 64x64 4 -add -o add_rgb_rgba.exr")
 command += info_command ("add_rgb_rgba.exr", safematch=True)
 
+# Test --missingfile
+command += oiiotool ("--create 320x240 4 --box:color=1,0,0,1:fill=1  10,10,200,100 -d uint8 -o box.tif")
+# Test again using --missingfile black
+command += oiiotool ("--missingfile black box.tif missing.tif --over -o box_over_missing2.tif || true")
+# Test again using --missingfile checker
+command += oiiotool ("--missingfile checker box.tif missing.tif --over -o box_over_missing3.tif || true")
+
+# Test --dumpdata
+command += oiiotool ("--pattern fill:left=0,0,0:right=1,1,0 2x2 3 -d half -o dump.exr")
+command += oiiotool ("-echo dumpdata: --dumpdata dump.exr")
+command += oiiotool ("-echo dumpdata:C --dumpdata:C=data dump.exr")
+
+# Test --create-dir
+# Remove `folder1/` if it already exists in order to subsequent test run to pass
+root_folder = "folder1"
+if os.path.exists(root_folder) and os.path.isdir(root_folder):
+    shutil.rmtree(root_folder)
+
+# Validate -o failed due to missing directory `folder1/folder2/`
+command += oiiotool (f"--create 2x2 1 -o {root_folder}/folder2/out.tif")
+# Validate -o sucessed with flag `--create-dir` and `out.tif` is valid and inside directory `folder1/folder2/`
+command += oiiotool (f"--create-dir --create 2x2 1 -o {root_folder}/folder2/out.tif")
+command += oiiotool (f"--info {root_folder}/folder2/out.tif")
 
 # To add more tests, just append more lines like the above and also add
 # the new 'feature.tif' (or whatever you call it) to the outputs list,
@@ -253,24 +262,23 @@ command += info_command ("add_rgb_rgba.exr", safematch=True)
 outputs = [
             "filled.tif",
             "autotrim.tif",
-            "histogram_regular.tif", "histogram_cumulative.tif",
             "trim.tif", "trimsubimages.tif",
-            "chanshuffle.tif", "ch-rgba.exr", "ch-z.exr",
-            "chappend-rgbaz.exr", "chname.exr",
             "add.exr", "cadd1.exr", "cadd2.exr",
             "sub.exr", "subc.exr",
             "mul.exr", "cmul1.exr", "cmul2.exr",
             "div.exr", "divc1.exr", "divc2.exr",
             "mad.exr", "invert.tif",
             "cpow1.exr", "cpow2.exr",
+            "normalize.exr", "normalize_scale.exr", "normalize_offsetin.exr",
+            "normalize_offsetscaleout.exr", "normalize_offsetscale.exr",
             "abs.exr", "absdiff.exr", "absdiffc.exr",
             "chsum.tif",
-            "rgbahalf-zfloat.exr",
             "tahoe-filled.tif", "growholes.tif",
             "rangecompress.tif", "rangeexpand.tif",
             "rangecompress-luma.tif", "rangeexpand-luma.tif",
             "min.exr", "cmin1.exr", "cmin2.exr",
             "max.exr", "cmax1.exr", "cmax2.exr",
+            "maxchan.tif", "minchan.tif",
             "grid-clamped.tif",
             "bsplinekernel.exr", "bspline-blur.tif",
             "gauss5x5-blur.tif", "tahoe-median.tif",
@@ -278,10 +286,17 @@ outputs = [
             "unsharp.tif", "unsharp-median.tif", "tahoe-laplacian.tif",
             "fft.exr", "ifft.exr",
             "polar.exr", "unpolar.exr",
+            "subimages-2.exr",
+            "subimages-4.exr",
+            "subimageD3.exr",
+            "subimageB1.exr",
+            "subimage-noB.exr",
+            "subimage-individual.exr",
+            "subimage1.exr",
             "labeladd.exr",
-            "exprgradient.tif", "exprcropped.tif", "exprstrcatlzw.tif",
-            "tahoe-contraststretch.tif",
             "const5-rgb.tif",
+            "box_over_missing2.tif",
+            "box_over_missing3.tif",
             "out.txt" ]
 
 #print "Running this command:\n" + command + "\n"

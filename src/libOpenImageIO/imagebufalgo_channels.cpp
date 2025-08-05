@@ -1,16 +1,16 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 /// \file
 /// Implementation of ImageBufAlgo algorithms that merely move pixels
 /// or channels between images without altering their values.
 
 
-#include <OpenEXR/half.h>
-
 #include <cmath>
 #include <iostream>
+
+#include <OpenImageIO/half.h>
 
 #include <OpenImageIO/deepdata.h>
 #include <OpenImageIO/imagebuf.h>
@@ -38,7 +38,7 @@ channels_(ImageBuf& dst, const ImageBuf& src, cspan<int> channelorder,
                 int cc = channelorder[c];
                 if (cc >= 0 && cc < nchannels)
                     d[c] = s[cc];
-                else if (channelvalues.size() > c)
+                else if (std::ssize(channelvalues) > c)
                     d[c] = channelvalues[c];
             }
         }
@@ -56,27 +56,29 @@ ImageBufAlgo::channels(ImageBuf& dst, const ImageBuf& src, int nchannels,
 {
     // Handle in-place case
     if (&dst == &src) {
-        ImageBuf tmp = src;
-        return channels(dst, tmp, nchannels, channelorder, channelvalues,
-                        newchannelnames, shuffle_channel_names, nthreads);
+        ImageBuf tmp;
+        bool ok = channels(tmp, src, nchannels, channelorder, channelvalues,
+                           newchannelnames, shuffle_channel_names, nthreads);
+        dst     = std::move(tmp);
+        return ok;
     }
 
     pvt::LoggedTimer logtime("IBA::channels");
     // Not intended to create 0-channel images.
     if (nchannels <= 0) {
-        dst.errorf("%d-channel images not supported", nchannels);
+        dst.errorfmt("{}-channel images not supported", nchannels);
         return false;
     }
     // If we dont have a single source channel,
     // hard to know how big to make the additional channels
     if (src.spec().nchannels == 0) {
-        dst.errorf("%d-channel images not supported", src.spec().nchannels);
+        dst.errorfmt("{}-channel images not supported", src.spec().nchannels);
         return false;
     }
 
-    // If channelorder is NULL, it will be interpreted as
+    // If channelorder is empty, it will be interpreted as
     // {0, 1, ..., nchannels-1}.
-    int* local_channelorder = NULL;
+    int* local_channelorder = nullptr;
     if (channelorder.empty()) {
         local_channelorder = OIIO_ALLOCA(int, nchannels);
         for (int c = 0; c < nchannels; ++c)
@@ -88,7 +90,7 @@ ImageBufAlgo::channels(ImageBuf& dst, const ImageBuf& src, int nchannels,
     bool inorder = true;
     for (int c = 0; c < nchannels; ++c) {
         inorder &= (channelorder[c] == c);
-        if (newchannelnames.size() > c && newchannelnames[c].size()
+        if (std::ssize(newchannelnames) > c && newchannelnames[c].size()
             && c < int(src.spec().channelnames.size()))
             inorder &= (newchannelnames[c] == src.spec().channelnames[c]);
     }
@@ -107,7 +109,7 @@ ImageBufAlgo::channels(ImageBuf& dst, const ImageBuf& src, int nchannels,
     for (int c = 0; c < nchannels; ++c) {
         int csrc = channelorder[c];
         // If the user gave an explicit name for this channel, use it...
-        if (newchannelnames.size() > c && newchannelnames[c].size())
+        if (std::ssize(newchannelnames) > c && newchannelnames[c].size())
             newspec.channelnames[c] = newchannelnames[c];
         // otherwise, if shuffle_channel_names, use the channel name of
         // the src channel we're using (otherwise stick to the default name)
@@ -153,8 +155,8 @@ ImageBufAlgo::channels(ImageBuf& dst, const ImageBuf& src, int nchannels,
                 int csrc = channelorder[c];
                 if (csrc < 0) {
                     // Replacing the channel with a new value
-                    float val = channelvalues.size() > c ? channelvalues[c]
-                                                         : 0.0f;
+                    float val = std::ssize(channelvalues) > c ? channelvalues[c]
+                                                              : 0.0f;
                     for (int s = 0, ns = dstdata.samples(p); s < ns; ++s)
                         dstdata.set_deep_value(p, c, s, val);
                 } else {
@@ -192,7 +194,7 @@ ImageBufAlgo::channels(const ImageBuf& src, int nchannels,
     bool ok = channels(result, src, nchannels, channelorder, channelvalues,
                        newchannelnames, shuffle_channel_names, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::channels() error");
+        result.errorfmt("ImageBufAlgo::channels() error");
     return result;
 }
 
@@ -236,7 +238,8 @@ ImageBufAlgo::channel_append(ImageBuf& dst, const ImageBuf& A,
     // make it a type that can hold both A's and B's type.
     if (!dst.pixels_valid()) {
         ImageSpec dstspec = A.spec();
-        dstspec.set_format(type_merge(A.spec().format, B.spec().format));
+        dstspec.set_format(
+            TypeDesc::basetype_merge(A.spec().format, B.spec().format));
         // Append the channel descriptions
         dstspec.nchannels = A.spec().nchannels + B.spec().nchannels;
         for (int c = 0; c < B.spec().nchannels; ++c) {
@@ -258,7 +261,8 @@ ImageBufAlgo::channel_append(ImageBuf& dst, const ImageBuf& A,
                 != dstspec.channelnames.end()) {
                 // If it's still a duplicate, fall back on a totally
                 // artificial name that contains the channel number.
-                name = Strutil::sprintf("channel%d", A.spec().nchannels + c);
+                name = Strutil::fmt::format("channel{}",
+                                            A.spec().nchannels + c);
             }
             dstspec.channelnames.push_back(name);
         }
@@ -285,7 +289,7 @@ ImageBufAlgo::channel_append(const ImageBuf& A, const ImageBuf& B, ROI roi,
     ImageBuf result;
     bool ok = channel_append(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("channel_append error");
+        result.errorfmt("channel_append error");
     return result;
 }
 

@@ -1,7 +1,11 @@
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 #ifndef OPENIMAGEIO_IV_UTILS_H
 #define OPENIMAGEIO_IV_UTILS_H
 
-#include <OpenImageIO/fmath.h>
+#include <OpenImageIO/oiioversion.h>
 
 OIIO_NAMESPACE_BEGIN
 

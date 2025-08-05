@@ -1,7 +1,11 @@
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 .PHONY: figures
 
-include ../make/detectplatform.mk
-BUILDDIR := ../../build/${platform}
+#include ../make/detectplatform.mk
+BUILDDIR := ../../build
 ifeq (${OIIOTOOL},)
   ifneq (${shell ls ${BUILDDIR}/bin/oiiotool},)
     OIIOTOOL := "${BUILDDIR}/bin/oiiotool"
@@ -11,25 +15,22 @@ ifeq (${OIIOTOOL},)
 endif
 
 
-PDFLATEX := pdflatex -file-line-error --halt-on-error -interaction=errorstopmode
+help:
+	@echo "help"
+	@echo "BUILDDIR=${BUILDDIR}"
+	@echo "Interesting targets:"
+	@echo "  sphinx         Build html docs in BUILDDIR/sphinx"
+	@echo "  sphinxpdf      Build pdf docs in BUILDDIR/sphinx"
+	@echo "  doxygen        Doxygen pre-pass needed before sphinx"
+	@echo "  doxygenclean   Reset doxygen pass"
+	@echo "  figures        Rebuild all figures (DON'T DO THIS!)"
+	@echo "  cleanfigures   Clear all figures (DEFINITELY DON'T DO THIS!)"
+#	@echo "Sphinx targets:"
+#	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(SPHINXBUILDDIR)" $(SPHINXOPTS) $(O)
 
-# by default, just make the document
-all: openimageio.pdf
 
+.PHONY: help Makefile
 
-# document making rule: use pdflatex
-openimageio.pdf: *.tex *.aux figures.turd
-	${PDFLATEX} openimageio.tex
-
-
-# special command 'make index' to regenerate the index
-index: openimageio_index
-
-openimageio_index: figures
-	${PDFLATEX} openimageio.tex
-	${PDFLATEX} openimageio.tex
-	makeindex openimageio
-	${PDFLATEX} openimageio.tex
 
 figures:
 	(cmake -E make_directory figures ; \
@@ -45,16 +46,9 @@ cleanfigures:
 	cmake -E remove_directory figures
 
 
-help:
-	@echo "help"
-	@echo "BUILDDIR=${BUILDDIR}"
-	@echo "Sphinx targets:"
-	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(SPHINXBUILDDIR)" $(SPHINXOPTS) $(O)
-
-
 
 doxygen:
-	echo "make doxygen TBD"
+	echo "make doxygen"
 	doxygen Doxyfile
 	touch doxygen.turd
 
@@ -72,10 +66,6 @@ SPHINXBUILD   = sphinx-build
 SOURCEDIR     = .
 SPHINXBUILDDIR      = ../../build/sphinx
 
-# Put it first so that "make" without argument is like "make help".
-#help:
-
-.PHONY: help Makefile
 
 # Catch-all target: route all unknown targets to Sphinx using the new
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).

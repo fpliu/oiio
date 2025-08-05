@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-from __future__ import absolute_import
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+from __future__ import annotations
+
 import OpenImageIO as oiio
+
 
 
 
@@ -12,8 +17,11 @@ import OpenImageIO as oiio
 
 try:
     r = oiio.ROI()
-    print ("ROI() =", r)
+    print ("undefined ROI() =", r)
     print ("r.defined =", r.defined)
+    print ("r.nchannels =", r.nchannels)
+    print ("")
+
     r = oiio.ROI (0, 640, 100, 200)
     print ("ROI(0, 640, 100, 200) =", r)
     r = oiio.ROI (0, 640, 0, 480, 0, 1, 0, 4)
@@ -64,6 +72,12 @@ try:
     oiio.set_roi_full (spec, oiio.ROI(13, 15, 17, 19))
     print ("After set, roi is", oiio.get_roi(spec))
     print ("After set, roi_full is", oiio.get_roi_full(spec))
+
+    r1 = oiio.ROI(0, 640, 0, 480, 0, 1, 0, 4)
+    r2 = r1.copy()
+    r2.xbegin = 42
+    print ("r1 =", r1)
+    print ("r2 =", r2)
 
     print ("")
 

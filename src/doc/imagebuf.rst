@@ -1,3 +1,8 @@
+..
+  Copyright Contributors to the OpenImageIO project.
+  SPDX-License-Identifier: CC-BY-4.0
+
+
 .. _chap-imagebuf:
 
 ImageBuf: Image Buffers
@@ -42,37 +47,40 @@ Making an empty or uninitialized ImageBuf
 Constructing a readable ImageBuf
 --------------------------------
 
-.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(string_view, int, int, ImageCache *, const ImageSpec *, Filesystem::IOProxy *)
-.. doxygenfunction:: OIIO::ImageBuf::reset(string_view, int, int, ImageCache *, const ImageSpec *, Filesystem::IOProxy *)
+.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(string_view name, int subimage = 0, int miplevel = 0, std::shared_ptr<ImageCache> imagecache = {}, const ImageSpec *config = nullptr, Filesystem::IOProxy *ioproxy = nullptr)
+.. doxygenfunction:: OIIO::ImageBuf::reset(string_view name, int subimage = 0, int miplevel = 0, std::shared_ptr<ImageCache> imagecache = {}, const ImageSpec *config = nullptr, Filesystem::IOProxy *ioproxy = nullptr)
 
 
-Constructing a writeable ImageBuf
+Constructing a writable ImageBuf
 --------------------------------------------------
 
-.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(const ImageSpec&, InitializePixels)
-.. doxygenfunction:: OIIO::ImageBuf::reset(const ImageSpec&, InitializePixels)
-.. doxygenfunction:: OIIO::ImageBuf::make_writeable
+.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(const ImageSpec &spec, InitializePixels zero = InitializePixels::Yes)
+.. doxygenfunction:: OIIO::ImageBuf::reset(const ImageSpec &spec, InitializePixels zero = InitializePixels::Yes)
+.. doxygenfunction:: OIIO::ImageBuf::make_writable
 
 
 Constructing an ImageBuf that "wraps" an application buffer
 -------------------------------------------------------------
 
-.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(const ImageSpec&, void *)
-.. doxygenfunction:: OIIO::ImageBuf::reset(const ImageSpec&, void *)
+.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(const ImageSpec &spec, const image_span<T>&)
+.. doxygenfunction:: OIIO::ImageBuf::reset(const ImageSpec &spec, const image_span<T>&)
+
+.. doxygenfunction:: OIIO::ImageBuf::ImageBuf(const ImageSpec &spec, void *buffer, stride_t xstride = AutoStride, stride_t ystride = AutoStride, stride_t zstride = AutoStride)
+.. doxygenfunction:: OIIO::ImageBuf::reset(const ImageSpec &spec, void *buffer, stride_t xstride = AutoStride, stride_t ystride = AutoStride, stride_t zstride = AutoStride)
 
 
 
 Reading and Writing disk images
 -------------------------------
 
-.. doxygenfunction:: OIIO::ImageBuf::read(int, int, bool, TypeDesc, ProgressCallback, void *)
-.. doxygenfunction:: OIIO::ImageBuf::read(int, int, int, int, bool, TypeDesc, ProgressCallback, void *)
+.. doxygenfunction:: OIIO::ImageBuf::read(int subimage = 0, int miplevel = 0, bool force = false, TypeDesc convert = TypeDesc::UNKNOWN, ProgressCallback progress_callback = nullptr, void *progress_callback_data = nullptr)
+.. doxygenfunction:: OIIO::ImageBuf::read(int subimage, int miplevel, int chbegin, int chend, bool force, TypeDesc convert, ProgressCallback progress_callback = nullptr, void *progress_callback_data = nullptr)
 .. doxygenfunction:: OIIO::ImageBuf::init_spec
 
-.. doxygenfunction:: OIIO::ImageBuf::write(string_view, TypeDesc, string_view, ProgressCallback, void *) const
-.. doxygenfunction:: OIIO::ImageBuf::write(ImageOutput *, ProgressCallback, void *) const
-.. doxygenfunction:: OIIO::ImageBuf::set_write_format(TypeDesc)
-.. doxygenfunction:: OIIO::ImageBuf::set_write_format(cspan<TypeDesc>)
+.. doxygenfunction:: OIIO::ImageBuf::write(string_view filename, TypeDesc dtype = TypeUnknown, string_view fileformat = string_view(), ProgressCallback progress_callback = nullptr, void *progress_callback_data = nullptr) const
+.. doxygenfunction:: OIIO::ImageBuf::write(ImageOutput *out, ProgressCallback progress_callback = nullptr, void *progress_callback_data = nullptr) const
+.. doxygenfunction:: OIIO::ImageBuf::set_write_format(TypeDesc format)
+.. doxygenfunction:: OIIO::ImageBuf::set_write_format(cspan<TypeDesc> format)
 .. doxygenfunction:: OIIO::ImageBuf::set_write_tiles
 .. doxygenfunction:: OIIO::ImageBuf::set_write_ioproxy
 
@@ -133,19 +141,20 @@ Getting and setting information about an ImageBuf
 .. doxygenfunction:: OIIO::ImageBuf::contains_roi
 .. doxygenfunction:: OIIO::ImageBuf::pixeltype
 .. doxygenfunction:: OIIO::ImageBuf::threads() const
-.. doxygenfunction:: OIIO::ImageBuf::threads(int) const
+.. doxygenfunction:: OIIO::ImageBuf::threads(int n) const
 
 
 
 Copying ImageBuf's and blocks of pixels
 ========================================
 
-.. doxygenfunction:: OIIO::ImageBuf::operator=(const ImageBuf&)
-.. doxygenfunction:: OIIO::ImageBuf::operator=(ImageBuf&&)
-.. doxygenfunction:: OIIO::ImageBuf::copy(const ImageBuf&, TypeDesc)
-.. doxygenfunction:: OIIO::ImageBuf::copy(TypeDesc) const
-.. doxygenfunction:: OIIO::ImageBuf::copy_metadata
+.. doxygenfunction:: OIIO::ImageBuf::operator=(const ImageBuf &src)
+.. doxygenfunction:: OIIO::ImageBuf::operator=(ImageBuf &&src)
+.. doxygenfunction:: OIIO::ImageBuf::copy(const ImageBuf &src, TypeDesc format = TypeUnknown)
+.. doxygenfunction:: OIIO::ImageBuf::copy(TypeDesc format) const
 .. doxygenfunction:: OIIO::ImageBuf::copy_pixels
+.. doxygenfunction:: OIIO::ImageBuf::copy_metadata
+.. doxygenfunction:: OIIO::ImageBuf::merge_metadata
 .. doxygenfunction:: OIIO::ImageBuf::swap
 
 
@@ -156,22 +165,36 @@ Getting and setting pixel values
 **Getting and setting individual pixels -- slow**
 
 .. doxygenfunction:: OIIO::ImageBuf::getchannel
-.. doxygenfunction:: OIIO::ImageBuf::getpixel(int, int, int, float *, int, WrapMode) const
+.. doxygenfunction:: OIIO::ImageBuf::getpixel(int x, int y, int z, float *pixel, int maxchannels = 1000, WrapMode wrap = WrapBlack) const
 
-.. doxygenfunction:: OIIO::ImageBuf::interppixel
-.. doxygenfunction:: OIIO::ImageBuf::interppixel_bicubic
-.. doxygenfunction:: OIIO::ImageBuf::interppixel_NDC
-.. doxygenfunction:: OIIO::ImageBuf::interppixel_bicubic_NDC
+.. doxygenfunction:: OIIO::ImageBuf::interppixel(float, float, span<float>, WrapMode) const
+.. doxygenfunction:: OIIO::ImageBuf::interppixel_bicubic(float, float, span<float>, WrapMode) const
+.. doxygenfunction:: OIIO::ImageBuf::interppixel_NDC(float, float, span<float>, WrapMode) const
+.. doxygenfunction:: OIIO::ImageBuf::interppixel_bicubic_NDC(float, float, span<float>, WrapMode) const
 
-.. doxygenfunction:: OIIO::ImageBuf::setpixel(int, int, int, const float *, int)
-.. doxygenfunction:: OIIO::ImageBuf::setpixel(int, const float *, int)
+.. doxygenfunction:: OIIO::ImageBuf::setpixel(int x, int y, int z, cspan<float> pixel)
+.. doxygenfunction:: OIIO::ImageBuf::setpixel(int i, cspan<float> pixel)
 
 |
 
 **Getting and setting regions of pixels -- fast**
 
-.. doxygenfunction:: OIIO::ImageBuf::get_pixels
-.. doxygenfunction:: OIIO::ImageBuf::set_pixels
+.. doxygenfunction:: OIIO::ImageBuf::get_pixels(ROI, const image_span<T>&) const
+.. doxygenfunction:: OIIO::ImageBuf::get_pixels(ROI, TypeDesc, const image_span<std::byte>&) const
+.. doxygenfunction:: OIIO::ImageBuf::set_pixels(ROI, const image_span<T>&)
+.. doxygenfunction:: OIIO::ImageBuf::set_pixels(ROI, TypeDesc, const image_span<std::byte>&)
+
+|
+
+**Getting and setting regions of pixels -- deprecated**
+
+These raw pointer versions of `get_pixels()` and `set_pixels()` should be
+converted to the `span` and `image_span` based versions.
+
+.. doxygenfunction:: OIIO::ImageBuf::get_pixels(ROI, span<T>, stride_t, stride_t, stride_t) const
+.. doxygenfunction:: OIIO::ImageBuf::get_pixels(ROI, span<T>, T*, stride_t, stride_t, stride_t) const
+.. doxygenfunction:: OIIO::ImageBuf::set_pixels(ROI, span<T>, stride_t, stride_t, stride_t)
+.. doxygenfunction:: OIIO::ImageBuf::set_pixels(ROI, span<T>, const T*, stride_t, stride_t, stride_t)
 
 
 
@@ -183,10 +206,10 @@ Deep data in an ImageBuf
 .. doxygenfunction:: OIIO::ImageBuf::set_deep_samples
 .. doxygenfunction:: OIIO::ImageBuf::deep_insert_samples
 .. doxygenfunction:: OIIO::ImageBuf::deep_erase_samples
-.. doxygenfunction:: OIIO::ImageBuf::deep_value(int, int, int, int, int) const
-.. doxygenfunction:: OIIO::ImageBuf::deep_value_uint(int, int, int, int, int) const
-.. doxygenfunction:: OIIO::ImageBuf::set_deep_value(int, int, int, int, int, float)
-.. doxygenfunction:: OIIO::ImageBuf::set_deep_value(int, int, int, int, int, uint32_t)
+.. doxygenfunction:: OIIO::ImageBuf::deep_value(int x, int y, int z, int c, int s) const
+.. doxygenfunction:: OIIO::ImageBuf::deep_value_uint(int x, int y, int z, int c, int s) const
+.. doxygenfunction:: OIIO::ImageBuf::set_deep_value(int x, int y, int z, int c, int s, float value)
+.. doxygenfunction:: OIIO::ImageBuf::set_deep_value(int x, int y, int z, int c, int s, uint32_t value)
 .. doxygenfunction:: OIIO::ImageBuf::deep_pixel_ptr
 
 .. cpp:function:: DeepData& OIIO::ImageBuf::deepdata()
@@ -199,7 +222,7 @@ Deep data in an ImageBuf
 Error Handling
 ==============
 
-.. doxygenfunction:: OIIO::ImageBuf::errorf
+.. doxygenfunction:: OIIO::ImageBuf::errorfmt
 .. doxygenfunction:: OIIO::ImageBuf::has_error
 .. doxygenfunction:: OIIO::ImageBuf::geterror
 
@@ -224,6 +247,89 @@ Miscellaneous
 
 .. doxygenfunction:: OIIO::ImageBuf::pixelindex
 .. doxygenfunction:: OIIO::ImageBuf::WrapMode_from_string
+
+.. cpp:function:: void lock() const
+                  void unlock() const
+
+    Manually lock or unlock the mutex that protects the ImageBuf from
+    concurrent access by multiple threads. Use with caution -- this should
+    almost never be needed in ordinary user code.
+
+
+
+Writing your own image processing functions
+===========================================
+
+In this section, we will discuss how to write functions that operate
+pixel by pixel on an ImageBuf. There are several different approaches
+to this, with different trade-offs in terms of speed, flexibility, and
+simplicity of implementation.
+
+Simple pixel-by-pixel access with `ImageBufAlgo::perpixel_op()`
+---------------------------------------------------------------
+
+Pros:
+
+* You only need to supply the inner loop body, the part that does the work
+  for a single pixel.
+* You can assume that all pixel data are float values.
+
+Cons/Limitations:
+
+* The operation must be one where each output pixel depends only on the
+  corresponding pixel of the input images.
+* Currently, the operation must be unary (one input image to produce one
+  output image), or binary (two input images, one output image). At this time,
+  there are not options to operate on a single image in-place, or to have more
+  than two input images, but this may be extended in the future.
+* Operating on `float`-based images is "full speed," but if the input images
+  are not `float`, the automatic conversions will add some expense. In
+  practice, we find working on non-float images to be about half the speed of
+  float images, but this may be acceptable in exchange for the simplicity of
+  this approach, especially for operations where you expect inputs to be float
+  typically.
+
+.. doxygenfunction:: perpixel_op(const ImageBuf &src, function_view<bool(span<float>, cspan<float>)> op, KWArgs options = {})
+
+.. doxygenfunction:: perpixel_op(const ImageBuf &srcA, const ImageBuf& srcB, function_view<bool(span<float>, cspan<float>, cspan<float>)> op, KWArgs options = {})
+
+Examples:
+
+.. code-block:: cpp
+
+    // Assume ImageBuf A, B are the inputs, ImageBuf R is the output
+
+    /////////////////////////////////////////////////////////////////
+    // Approach 1: using a standalone function to add two images
+    bool my_add (span<float> r, cspan<float> a, cspan<float> b) {
+        for (size_t c = 0, nc = size_t(r.size()); c < nc; ++c)
+            r[c] = a[c] + b[c];
+        return true;
+    }
+
+    R = ImageBufAlgo::perpixel_op(A, B, my_add);
+
+    /////////////////////////////////////////////////////////////////
+    // Approach 2: using a "functor" class to add two images
+    struct Adder {
+        bool operator() (span<float> r, cspan<float> a, cspan<float> b) {
+            for (size_t c = 0, nc = size_t(r.size()); c < nc; ++c)
+                r[c] = a[c] + b[c];
+            return true;
+        }
+    };
+
+    Adder adder;
+    R = ImageBufAlgo::perpixel_op(A, B, adder);
+    
+    /////////////////////////////////////////////////////////////////
+    // Approach 3: using a lambda to add two images
+    R = ImageBufAlgo::perpixel_op(A, B,
+            [](span<float> r, cspan<float> a, cspan<float> b) {
+                for (size_t c = 0, nc = size_t(r.size()); c < nc; ++c)
+                    r[c] = a[c] + b[c];
+                return true;
+            });
 
 
 
@@ -469,7 +575,7 @@ Strategy 2: Template your iterating functions based on buffer type
 Consider the following alternate version of the `make_black` function
 from Section `Example: Set all pixels in a region to black`_ ::
 
-    template<type BUFT>
+    template<typename BUFT>
     static bool make_black_impl (ImageBuf &buf, ROI region)
     {
         // Clamp the region's channel range to the channels in the image
@@ -497,7 +603,7 @@ from Section `Example: Set all pixels in a region to black`_ ::
             return make_black_impl<unsigned short> (buf, region);
         else {
             buf.error ("Unsupported pixel data format %s", buf.spec().format);
-            retrn false;
+            return false;
         }
     }
 
@@ -512,7 +618,7 @@ chapter).  You could rewrite the example even more simply::
 
     #include <OpenImageIO/imagebufalgo_util.h>
     
-    template<type BUFT>
+    template<typename BUFT>
     static bool make_black_impl (ImageBuf &buf, ROI region)
     {
         ... same as before ...

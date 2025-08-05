@@ -1,14 +1,18 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-from __future__ import absolute_import
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+from __future__ import annotations
+
 import array
 import numpy
 import OpenImageIO as oiio
 
 
 # Print the contents of an ImageSpec
-def print_imagespec (spec, subimage=0, mip=0, msg="") :
+def print_imagespec (spec: oiio.ImageSpec, subimage=0, mip=0, msg="") :
     if msg != "" :
         print (str(msg))
     if spec.depth <= 1 :
@@ -36,9 +40,9 @@ def print_imagespec (spec, subimage=0, mip=0, msg="") :
     print ("  deep = ", spec.deep)
     for attrib in spec.extra_attribs :
         if type(attrib.value) == str :
-            print (" ", attrib.name, "= \"" + attrib.value + "\"")
+            print ("  {} = \"{}\"".format(attrib.name, attrib.value))
         else :
-            print (" ", attrib.name, "=", attrib.value)
+            print ("  {} = {}".format(attrib.name,attrib.value))
     # Equivalent, using indexing rather than iterating:
     #for i in range(len(spec.extra_attribs)) :
     #    if type(spec.extra_attribs[i].value) == str :
@@ -47,7 +51,7 @@ def print_imagespec (spec, subimage=0, mip=0, msg="") :
     #        print (" ", spec.extra_attribs[i].name, "=", spec.extra_attribs[i].value)
 
 
-def write (image, filename, format=oiio.UNKNOWN) :
+def write (image, filename: str, format=oiio.UNKNOWN) :
     if not image.has_error :
         image.write (filename, format)
     if image.has_error :
@@ -55,91 +59,33 @@ def write (image, filename, format=oiio.UNKNOWN) :
 
 
 
-######################################################################
-# main test starts here
+def test_repr_png () :
+    # Test a valid 16 bit exr
+    b = oiio.ImageBuf("src/AllHalfValues.exr")
+    png = b._repr_png_()
 
-try:
+    with open("valid_repr_png.png", "wb") as f:
+        f.write(png)
+    
+    # Test an invalid image with null dimensions
+    # create ImageBuf with x dimension as 0
+    b = oiio.ImageBuf(oiio.ImageSpec(0,2,4,"float"))
+    png = b._repr_png_()
+    with open("invalid_repr_png.png", "wb") as f:
+        f.write(png)
 
-    print ("Constructing to be a writeable 320x240,4 UINT16:")
-    b = oiio.ImageBuf (oiio.ImageSpec(320,240,4,oiio.UINT16))
-    print_imagespec (b.spec())
-    print ("Resetting to be a writeable 640x480,3 Float:")
-    b.reset (oiio.ImageSpec(640,480,3,oiio.FLOAT))
-    print_imagespec (b.spec())
-    print ("")
 
-    # Test reading from disk
-    print ("Testing read of ../common/textures/grid.tx:")
-    b = oiio.ImageBuf ("../common/textures/grid.tx")
-    print ("subimage:", b.subimage, " / ", b.nsubimages)
-    print ("miplevel:", b.miplevel, " / ", b.nmiplevels)
-    print ("channels:", b.nchannels)
-    print ("name:", b.name)
-    print ("file_format_name:", b.file_format_name)
-    print ("deep:", b.deep)
-    print ("orientation:", b.orientation)
-    print ("oriented x,y,width,height:", b.oriented_x, b.oriented_y, b.oriented_width, b.oriented_height)
-    print ("oriented full x,y,width,height:", b.oriented_full_x, b.oriented_full_y, b.oriented_full_width, b.oriented_full_height)
-    print ("xyz beg/end:", b.xbegin, b.xend, b.ybegin, b.yend, b.zbegin, b.zend)
-    print ("xyz min/max:", b.xmin, b.xmax, b.ymin, b.ymax, b.zmin, b.zmax)
-    print ("setting full res...")
-    b.set_full (0, 2048, 0, 2048, 0, 1)
-    print ("roi =", b.roi)
-    print ("full roi =", b.roi_full)
-    print ("setting full roi again, as ROI...")
-    b.roi_full = oiio.ROI(0, 1024, 0, 1024, 0, 1, 0, b.nchannels)
-    print ("Changing origin...")
-    b.set_origin (15, 20);
-    print ("Printing the whole spec to be sure:")
-    print_imagespec (b.spec())
-    print ("")
-    print ("Resetting to a different MIP level:")
-    b.reset ("../common/textures/grid.tx", 0, 2)
-    print_imagespec (b.spec())
-    print ("")
 
-    # Create a small buffer, do various pixel reads and writes
-    print ("Making 2x2 RGB image:")
-    b = oiio.ImageBuf (oiio.ImageSpec(2,2,3,oiio.UINT8))
-    print_imagespec (b.spec())
-    b.setpixel (0, 0, 0, (1.0, 0.0, 0.0))
-    b.setpixel (1, 0, 0, (0.0, 1.0, 0.0))
-    b.setpixel (0, 1, 0, (0.0, 0.0, 1.0))
-    b.setpixel (1, 1, 0, (0.0, 0.0, 0.0))
-    print ("Pixel 0,0 is", b.getpixel(0,0,0))
-    print ("Pixel 1,0 is", b.getpixel(1,0))   # test 2D lookup
-    print ("Pixel 0,1 is", b.getpixel(0,1))
-    print ("Interpolating 1,0.5 ->", b.interppixel(1,0.5))
-    print ("Interpolating NDC 0.25,0.5 ->", b.interppixel_NDC(0.25,0.5))
-    print ("Interpolating bicubic 0.25,0.5 ->", b.interppixel_bicubic(1.0,0.5))
-    print ("Interpolating NDC bicubic 0.25,0.5 ->", b.interppixel_bicubic_NDC(0.25,0.5))
-    print ("The whole image is: ", b.get_pixels(oiio.TypeDesc.TypeFloat))
-    print ("")
-    print ("Saving file...")
-    b.write ("out.tif")
-
-    # test set_pixels, too
-    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
-                  numpy.array([[[0.1,0.0,0.9], [0.2,0.0,0.7]],
-                               [[0.3,0.0,0.8], [0.4,0.0,0.6]]], dtype="f"))
-    b.write ("outtuple.tif")
-    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
-                  numpy.array([0.1,0.5,0.9, 0.2,0.5,0.7, 0.3,0.5,0.8, 0.4,0.5,0.6], dtype='f'))
-    b.write ("outarray.tif")
-    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
-                  numpy.array([26,128,230, 51,128,178, 76,128,204, 102,128,153], dtype='B'))
-    write (b, "outarrayB.tif", oiio.UINT8)
-    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
-                  numpy.array([6554,32767,58982, 13107,32767,45874,
-                                   19660,32767,52428, 26214,32767,39321], dtype='H'))
-    write (b, "outarrayH.tif", oiio.UINT16)
-
+def test_perchannel_formats () :
     # Test writing per-channel formats with an ImageBuf
     b = oiio.ImageBuf(oiio.ImageSpec(2,2,4,"float"))
     oiio.ImageBufAlgo.fill(b, (0.1, 0.2, 0.3, 0.4))
     b.set_write_format (("half", "half", "half", "float"))
     b.write ("perchan.exr")
 
+
+
+def test_deep () :
     # Test write and read of deep data
     # Let's try writing one
     print ("\nWriting deep buffer...")
@@ -181,6 +127,213 @@ try:
                 print ("Sample", s)
                 for c in range(dd.channels) :
                     print ("\tc {0} : {1:.3f}".format(c, dd.deep_value(p,c,s)))
+
+
+
+# Test ability to write multiple subimages to a file.
+# Also tests ImageBuf.write(ImageOutput)
+def test_multiimage () :
+    print ("Writing multi-image file")
+    spec = oiio.ImageSpec (128, 64, 3, "float")
+    out = oiio.ImageOutput.create ("multipart.exr")
+    assert out is not None
+    # Open with intent to write two subimages, each with same spec
+    if not out.open ("multipart.exr", (spec, spec)) :
+        print ("Error on initial open:", out.geterror())
+        return
+    img = oiio.ImageBufAlgo.fill ((0.5, 0.0, 0.0), spec.roi)
+    if not img.write (out) :
+        print ("Error on write:", img.geterror())
+        return
+    if not out.open ("multipart.exr", spec, "AppendSubimage") :
+        print ("Error on open for append:", out.geterror())
+        return
+    img = oiio.ImageBufAlgo.fill ((0.0, 0.5, 0.0), spec.roi)
+    if not img.write (out) :
+        print ("Error on write:", img.geterror())
+        return
+    out.close ()
+
+
+# Test the functionality of uninitialized ImageBufs
+def test_uninitialized () :
+    print ("Testing uninitialized bufs")
+    empty = oiio.ImageBuf()
+    print ("  empty nchannels:", empty.nchannels)
+
+
+# Print floating point tuple contents with slightly less than full precision
+# in order to mask LSB differences between platforms.
+def ftupstr(tup) :
+    return "(" + ", ".join(["{:.5}".format(x) for x in tup]) + ")"
+
+
+# Test the functionality of metadata copying and merging
+def test_copy_metadata() :
+    print ("\nTesting metadata copying")
+    # specA has numerical abc and def
+    specA = oiio.ImageSpec(64, 64, 3, "uint8")
+    specA.attribute("abc", 1)
+    specA.attribute("def", 3.14)
+    A = oiio.ImageBuf(specA)
+    print_imagespec (A.spec(), msg=" A's spec")
+    # specB has no abc, string def, and two camera attribs
+    specFull = oiio.ImageSpec(64, 64, 3, "uint8")
+    specFull.attribute("def", "Bfoo")
+    specFull.attribute("camera:x", "Bx")
+    specFull.attribute("camera:y", "By")
+    B = oiio.ImageBuf(specFull)
+    print_imagespec (B.spec(), msg=" B's spec")
+    print(" A full copy of A should have abc and def as A does:")
+    C = A.copy()
+    print_imagespec (C.spec(), msg=" result of C = A.copy():")
+    print(" A.copy_metadata(B) should be identical to B")
+    C = A.copy()
+    C.copy_metadata (B)
+    print_imagespec (C.spec(), msg=" result of A.copy_metadata(B):")
+    print(" A.merge_metadata(B) should have abc, def from A, camera from B")
+    C = A.copy()
+    C.merge_metadata (B)
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B):")
+    print(" A.merge_metadata(B,True) should have abc from A, def and camera from B")
+    C = A.copy()
+    C.merge_metadata (B, override=True)
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B, override=True):")
+    print(" A.merge_metadata(B,pattern) should have abc,def from A, camera from B")
+    C = A.copy()
+    C.merge_metadata (B, pattern="^camera:")
+    print_imagespec (C.spec(), msg=" result of A.merge_metadata(B, pattern='^camera:'):")
+
+
+# Test proper error handling for asking for out-of-range subimages or MIP levels.
+# Test with one format that supports neither subimages nor MIP levels,
+# and with one format that supports them, but the file we try has none.
+def test_outofrange_subimage_miplevel() :
+    print("\nTesting error handling for out-of-range subimage, miplevel")
+    for f in [ "bayer.png", "grid-small.exr", "tahoe-tiny.tif" ] :
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 1, 0)
+        print(" ", f, "subimage 1 mip 0:", ok, buf.geterror())
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 0, 0)
+        print(" ", f, "subimage 0 mip 0:", ok, buf.geterror())
+        buf = oiio.ImageBuf()
+        ok = buf.init_spec("../common/" + f, 0, 1)
+        print(" ", f, "subimage 0 mip 1:", ok, buf.geterror())
+
+
+
+######################################################################
+# main test starts here
+
+try:
+
+    print ("Constructing to be a writable 320x240,4 UINT16:")
+    b = oiio.ImageBuf (oiio.ImageSpec(320,240,4,oiio.UINT16))
+    print_imagespec (b.spec())
+    print ("Resetting to be a writable 640x480,3 Float:")
+    b.reset (oiio.ImageSpec(640,480,3,oiio.FLOAT))
+    print_imagespec (b.spec())
+
+    print ("Constructing from a bare numpy array:")
+    b = oiio.ImageBuf(numpy.array([[[0.1,0.0,0.9,1.0], [0.2,0.0,0.7,1.0]],
+                                   [[0.3,0.0,0.8,1.0], [0.4,0.0,0.6,1.0]],
+                                   [[0.5,0.0,0.7,1.0], [0.6,0.0,0.5,1.0]]], dtype="f"))
+    print (" from 3D, shape is", b.spec().format, b.roi)
+    # should be width=2, height=3, channels=4, format=FLOAT
+    print_imagespec (b.spec())
+    print ("  pixel (0,1) = {:.3g} {:.3g} {:.3g} {:.3g}".format(b.getpixel (0,1)[0],
+           b.getpixel (0,1)[1], b.getpixel (0,1)[2], b.getpixel(0,1)[3]))
+    print ("")
+    b = oiio.ImageBuf(numpy.array([[1.0, 0.5],
+                                   [0.25, 0.125],
+                                   [1.0, 0.5]], dtype="uint8"))
+    print (" from 2D uint8, shape is", b.spec().format, b.roi)
+    print ("")
+    b = oiio.ImageBuf(numpy.array([[[[0.1,0.0,0.9,1.0], [0.2,0.0,0.7,1.0]],
+                                   [[0.3,0.0,0.8,1.0], [0.4,0.0,0.6,1.0]] ],
+                                  [[[0.3,0.0,0.8,1.0], [0.4,0.0,0.6,1.0]],
+                                   [[0.5,0.0,0.7,1.0], [0.6,0.0,0.5,1.0]]]], dtype="f"))
+    print (" from 4D, shape is", b.spec().format, b.roi)
+    print ("")
+
+    # Test reading from disk
+    print ("Testing read of ../common/textures/grid.tx:")
+    b = oiio.ImageBuf ("../common/textures/grid.tx")
+    b.init_spec ("../common/textures/grid.tx")
+    b.read ()
+    if b.nsubimages != 0:
+        print ("subimage:", b.subimage, " / ", b.nsubimages)
+    if b.nmiplevels != 0:
+        print ("miplevel:", b.miplevel, " / ", b.nmiplevels)
+    print ("channels:", b.nchannels)
+    print ("name:", b.name)
+    print ("file_format_name:", b.file_format_name)
+    print ("deep:", b.deep)
+    print ("orientation:", b.orientation)
+    print ("oriented x,y,width,height:", b.oriented_x, b.oriented_y, b.oriented_width, b.oriented_height)
+    print ("oriented full x,y,width,height:", b.oriented_full_x, b.oriented_full_y, b.oriented_full_width, b.oriented_full_height)
+    print ("xyz beg/end:", b.xbegin, b.xend, b.ybegin, b.yend, b.zbegin, b.zend)
+    print ("xyz min/max:", b.xmin, b.xmax, b.ymin, b.ymax, b.zmin, b.zmax)
+    print ("setting full res...")
+    b.set_full (0, 2048, 0, 2048, 0, 1)
+    print ("roi =", b.roi)
+    print ("full roi =", b.roi_full)
+    print ("setting full roi again, as ROI...")
+    b.roi_full = oiio.ROI(0, 1024, 0, 1024, 0, 1, 0, b.nchannels)
+    print ("Changing origin...")
+    b.set_origin (15, 20);
+    print ("Printing the whole spec to be sure:")
+    print_imagespec (b.spec())
+    print ("")
+    print ("Resetting to a different MIP level:")
+    b.reset ("../common/textures/grid.tx", 0, 2)
+    print_imagespec (b.spec())
+    print ("")
+
+    # Create a small buffer, do various pixel reads and writes
+    print ("Making 2x2 RGB image:")
+    b = oiio.ImageBuf (oiio.ImageSpec(2,2,3,oiio.UINT8))
+    print_imagespec (b.spec())
+    b.setpixel (0, 0, 0, (1.0, 0.0, 0.0))
+    b.setpixel (1, 0, 0, (0.0, 1.0, 0.0))
+    b.setpixel (0, 1, 0, (0.0, 0.0, 1.0))
+    b.setpixel (1, 1, 0, (0.0, 0.0, 0.0))
+    print ("Pixel 0,0 is", b.getpixel(0,0,0))
+    print ("Pixel 1,0 is", b.getpixel(1,0))   # test 2D lookup
+    print ("Pixel 0,1 is", b.getpixel(0,1))
+    print ("Interpolating 1,0.5 ->", ftupstr(b.interppixel(1,0.5)))
+    print ("Interpolating NDC 0.25,0.5 ->", ftupstr(b.interppixel_NDC(0.25,0.5)))
+    print ("Interpolating bicubic 0.25,0.5 ->", ftupstr(b.interppixel_bicubic(1.0,0.5)))
+    print ("Interpolating NDC bicubic 0.25,0.5 ->", ftupstr(b.interppixel_bicubic_NDC(0.25,0.5)))
+    print ("The whole image is: ", b.get_pixels(oiio.TypeFloat))
+    print ("")
+    print ("Saving file...")
+    b.write ("out.tif")
+
+    # test set_pixels, too
+    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
+                  numpy.array([[[0.1,0.0,0.9], [0.2,0.0,0.7]],
+                               [[0.3,0.0,0.8], [0.4,0.0,0.6]]], dtype="f"))
+    b.write ("outtuple.tif")
+    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
+                  numpy.array([0.1,0.5,0.9, 0.2,0.5,0.7, 0.3,0.5,0.8, 0.4,0.5,0.6], dtype='f'))
+    b.write ("outarray.tif")
+    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
+                  numpy.array([26,128,230, 51,128,178, 76,128,204, 102,128,153], dtype='B'))
+    write (b, "outarrayB.tif", oiio.UINT8)
+    b.set_pixels (oiio.ROI(0, 2, 0, 2, 0, 1, 0, 3),
+                  numpy.array([6554,32767,58982, 13107,32767,45874,
+                                   19660,32767,52428, 26214,32767,39321], dtype='H'))
+    write (b, "outarrayH.tif", oiio.UINT16)
+
+    test_perchannel_formats ()
+    test_deep ()
+    test_multiimage ()
+    test_uninitialized ()
+    test_copy_metadata ()
+    test_repr_png ()
+    test_outofrange_subimage_miplevel ()
 
     print ("\nDone.")
 except Exception as detail:

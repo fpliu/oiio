@@ -1,13 +1,14 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: BSD-3-Clause and Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
 #include <vector>
 
-#include <OpenEXR/ImathFun.h>
-#include <OpenEXR/half.h>
-
+#include <OpenImageIO/Imath.h>
 #include <OpenImageIO/argparse.h>
 #include <OpenImageIO/benchmark.h>
 #include <OpenImageIO/fmath.h>
@@ -16,6 +17,8 @@
 #include <OpenImageIO/timer.h>
 #include <OpenImageIO/typedesc.h>
 #include <OpenImageIO/unittest.h>
+#include <OpenImageIO/vecparam.h>
+
 
 using namespace OIIO;
 
@@ -31,31 +34,20 @@ static bool verbose   = false;
 static void
 getargs(int argc, char* argv[])
 {
-    bool help = false;
     ArgParse ap;
     // clang-format off
-    ap.options(
-        "fmath_test\n" OIIO_INTRO_STRING "\n"
-        "Usage:  fmath_test [options]",
-        // "%*", parse_files, "",
-        "--help", &help, "Print help message",
-        "-v", &verbose, "Verbose mode",
-        // "--threads %d", &numthreads,
-        //     ustring::sprintf("Number of threads (default: %d)", numthreads).c_str(),
-        "--iterations %d", &iterations,
-            ustring::sprintf("Number of values to convert for benchmarks (default: %d)", iterations).c_str(),
-        "--trials %d", &ntrials, "Number of trials",
-        nullptr);
+    ap.intro("fmath_test\n" OIIO_INTRO_STRING)
+      .usage("fmath_test [options]");
+
+    ap.arg("-v", &verbose)
+      .help("Verbose mode");
+    ap.arg("--iters %d", &iterations)
+      .help(Strutil::fmt::format("Number of iterations (default: {})", iterations));
+    ap.arg("--trials %d", &ntrials)
+      .help("Number of trials");
     // clang-format on
-    if (ap.parse(argc, (const char**)argv) < 0) {
-        std::cerr << ap.geterror() << std::endl;
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
-    if (help) {
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
+
+    ap.parse(argc, (const char**)argv);
 }
 
 
@@ -105,8 +97,34 @@ test_int_helpers()
     OIIO_CHECK_EQUAL(round_to_multiple(4, 5), 5);
     OIIO_CHECK_EQUAL(round_to_multiple(5, 5), 5);
     OIIO_CHECK_EQUAL(round_to_multiple(6, 5), 10);
+    OIIO_CHECK_EQUAL(round_to_multiple(-1, 5), 0);
+    OIIO_CHECK_EQUAL(round_to_multiple(-4, 5), 0);
+    OIIO_CHECK_EQUAL(round_to_multiple(-5, 5), -5);
+    OIIO_CHECK_EQUAL(round_to_multiple(-6, 5), -5);
+    OIIO_CHECK_EQUAL(round_to_multiple(-9, 5), -5);
+    OIIO_CHECK_EQUAL(round_to_multiple(-10, 5), -10);
+    OIIO_CHECK_EQUAL(round_to_multiple(-11, 5), -10);
     OIIO_CHECK_EQUAL(round_to_multiple(size_t(5), 5), 5);
     OIIO_CHECK_EQUAL(round_to_multiple(size_t(6), 5), 10);
+
+    // round_down_to_multiple
+    OIIO_CHECK_EQUAL(round_down_to_multiple(0, 5), 0);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(1, 5), 0);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(5, 5), 5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(6, 5), 5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(10, 5), 10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(11, 5), 10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-1, 5), -5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-4, 5), -5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-5, 5), -5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-6, 5), -10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-9, 5), -10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-10, 5), -10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(-11, 5), -15);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(size_t(5), 5), 5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(size_t(6), 5), 5);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(size_t(10), 5), 10);
+    OIIO_CHECK_EQUAL(round_down_to_multiple(size_t(11), 5), 10);
 
     // round_to_multiple_of_pow2
     OIIO_CHECK_EQUAL(round_to_multiple_of_pow2(int(1), 4), 4);
@@ -299,7 +317,7 @@ test_convert_type(double tolerance = 1e-6)
             }
         }
     } else {
-        for (float i = 0.0f; i <= 1.0f; i += 0.001) {  // NOLINT
+        for (float i = 0.0f; i <= 1.0f; i += 0.001) {  // NOLINT //NOSONAR
             T in  = (T)i;
             F f   = convert_type<T, F>(in);
             T out = convert_type<F, T>(f);
@@ -316,9 +334,18 @@ test_convert_type(double tolerance = 1e-6)
 
 template<typename S, typename D>
 void
-do_convert_type(const std::vector<S>& svec, std::vector<D>& dvec)
+do_convert_type_ptr(const std::vector<S>& svec, std::vector<D>& dvec)
 {
     convert_type(&svec[0], &dvec[0], svec.size());
+    DoNotOptimize(dvec[0]);  // Be sure nothing is optimized away
+}
+
+
+template<typename S, typename D>
+void
+do_convert_type_span(const std::vector<S>& svec, std::vector<D>& dvec)
+{
+    convert_type(svec, dvec);
     DoNotOptimize(dvec[0]);  // Be sure nothing is optimized away
 }
 
@@ -331,17 +358,24 @@ benchmark_convert_type()
     const size_t size    = iterations;
     const S testval(1.0);
     std::vector<S> svec(size, testval);
-    std::vector<D> dvec(size);
-    Strutil::printf("Benchmark conversion of %6s -> %6s : ",
-                    TypeDesc(BaseTypeFromC<S>::value),
-                    TypeDesc(BaseTypeFromC<D>::value));
-    float time = time_trial(bind(do_convert_type<S, D>, std::cref(svec),
+    std::vector<D> dvec(size), dvec2(size);
+    print("Benchmark conversion of {:6} -> {:6} (ptr) : ",
+          TypeDesc(BaseTypeFromC<S>::value), TypeDesc(BaseTypeFromC<D>::value));
+    float time = time_trial(bind(do_convert_type_ptr<S, D>, std::cref(svec),
                                  std::ref(dvec)),
                             ntrials, repeats)
                  / repeats;
-    Strutil::printf("%7.1f Mvals/sec\n", (size / 1.0e6) / time);
+    print("{:7.1f} Mvals/sec\n", (size / 1.0e6) / time);
+    print("Benchmark conversion of {:6} -> {:6} (span): ",
+          TypeDesc(BaseTypeFromC<S>::value), TypeDesc(BaseTypeFromC<D>::value));
+    float time2 = time_trial(bind(do_convert_type_ptr<S, D>, std::cref(svec),
+                                  std::ref(dvec2)),
+                             ntrials, repeats)
+                  / repeats;
+    print("{:7.1f} Mvals/sec\n", (size / 1.0e6) / time2);
     D r = convert_type<S, D>(testval);
     OIIO_CHECK_EQUAL(dvec[size - 1], r);
+    OIIO_CHECK_EQUAL(dvec2[size - 1], r);
 }
 
 
@@ -415,7 +449,7 @@ test_packbits()
         " packed to 10 bits, as 16 bit values: %04x %04x %04x %04x %04x\n",
         u10[0], u10[1], u10[2], u10[3], u10[4]);
     uint16_t u16[8];
-    bit_unpack(8, (const unsigned char*)u10, 10, u16);
+    bit_unpack(make_cspan((const unsigned char*)u10, 10), 10, make_span(u16));
     Strutil::printf(
         " unpacked back to 16 bits: %04x %04x %04x %04x %04x %04x %04x %04x\n",
         u16[0], u16[1], u16[2], u16[3], u16[4], u16[5], u16[6], u16[7]);
@@ -493,7 +527,7 @@ test_half_convert_accuracy()
     const int nhalfs = 1 << 16;
     std::vector<half> H(nhalfs, 0.0f);
     for (auto i = 0; i < nhalfs; ++i)
-        H[i] = bit_cast<unsigned short, half>((unsigned short)i);
+        H[i] = bitcast<half, uint16_t>((uint16_t)i);
 
     // Convert the whole array to float equivalents in one shot (which will
     // use SIMD ops if available).
@@ -511,13 +545,12 @@ test_half_convert_accuracy()
         float f = H[i];  // single assignment uses table from Imath
         half h  = (half)f;
         if ((f != F[i] || f != H2[i] || f != h || H[i] != H2[i]
-             || bit_cast<half, unsigned short>(h)
-                    != bit_cast<half, unsigned short>(H[i])
-             || bit_cast<half, unsigned short>(h) != i)
+             || bitcast<uint16_t, half>(h) != bitcast<uint16_t, half>(H[i])
+             || bitcast<uint16_t, half>(h) != i)
             && Imath::finitef(H[i])) {
             ++nwrong;
-            Strutil::printf("wrong %d 0b%s  h=%g, f=%g %s\n", i, bin16(i), H[i],
-                            F[i], isnan(f) ? "(nan)" : "");
+            Strutil::print("wrong {} 0b{}  h={}, f={} {}\n", i, bin16(i), H[i],
+                           F[i], isnan(f) ? "(nan)" : "");
         }
     }
 
@@ -531,6 +564,157 @@ test_half_convert_accuracy()
 
 
 
+static void
+test_bitcast()
+{
+    OIIO_CHECK_EQUAL((bitcast<uint16_t, half>(half(0.0f))), 0);
+    OIIO_CHECK_EQUAL((bitcast<uint32_t, float>(0.0f)), 0);
+    OIIO_CHECK_EQUAL((bitcast<int32_t, float>(0.0f)), 0);
+    OIIO_CHECK_EQUAL((bitcast<float, uint32_t>(0)), 0.0f);
+    OIIO_CHECK_EQUAL((bitcast<float, int32_t>(0)), 0.0f);
+    OIIO_CHECK_EQUAL((bitcast<uint64_t, double>(0.0)), 0);
+    OIIO_CHECK_EQUAL((bitcast<int64_t, double>(0.0)), 0);
+    OIIO_CHECK_EQUAL((bitcast<double, uint64_t>(0)), 0.0);
+    OIIO_CHECK_EQUAL((bitcast<double, int64_t>(0)), 0.0);
+}
+
+
+
+template<typename T>
+static void
+test_swap_endian(T val, T swapval)
+{
+    std::string type     = TypeDescFromC<T>::value().c_str();
+    static const int len = 100;
+    Benchmarker bench;
+    std::array<T, len> v;
+    std::fill(v.begin(), v.end(), val);
+    swap_endian(&(v[0]));  // Test single value version
+    OIIO_CHECK_EQUAL(v[0], swapval);
+    swap_endian(&(v[0]), len);  // Test ptr + len version
+    OIIO_CHECK_EQUAL(v[37], swapval);
+    std::fill(v.begin(), v.end(), val);
+    byteswap_span(OIIO::span<T>(v));  // Test span byteswap
+    OIIO_CHECK_EQUAL(v[37], swapval);
+    clobber(v[0]);
+    bench(Strutil::fmt::format("swap_endian({})", type),
+          [&]() { swap_endian(&v[0]); });
+    bench.work(len);
+    bench(Strutil::fmt::format("swap_endian({}, {})", type, len),
+          [&]() { swap_endian(v.data(), len); });
+}
+
+
+static void
+test_swap_endian()
+{
+    test_swap_endian<short>(0x1234, 0x3412);
+    test_swap_endian<unsigned short>(0x1234, 0x3412);
+    test_swap_endian<int>(0x12345678, 0x78563412);
+    test_swap_endian<unsigned int>(0x12345678, 0x78563412);
+    test_swap_endian<long long>(0x123456789abcdef0LL, 0xf0debc9a78563412LL);
+    test_swap_endian<unsigned long long>(0x123456789abcdef0ULL,
+                                         0xf0debc9a78563412ULL);
+}
+
+
+
+// Minimal vector class having x, y, z struct members.
+struct XYZVector {
+    float x, y, z;
+    XYZVector() {}
+    XYZVector(float x, float y, float z)
+        : x(x)
+        , y(y)
+        , z(z)
+    {
+    }
+};
+
+// Minimal vector class enclosing an array[3].
+struct Arr3Vector {
+    float xyz[3];
+    Arr3Vector() {}
+    Arr3Vector(float x, float y, float z)
+    {
+        xyz[0] = x;
+        xyz[1] = y;
+        xyz[2] = z;
+    }
+    float operator[](int i) const { return xyz[i]; }
+};
+
+
+
+// Function that takes a V3fParam, and must implicitly convert it to an
+// Imath::V3f.
+Imath::V3f
+v3ffunc(V3fParam p)
+{
+    return p;
+}
+
+
+// Function that takes a M33Param, and must implicitly convert it to an
+// Imath::M33f.
+Imath::M33f
+M33func(M33fParam p)
+{
+    return p;
+}
+
+
+// Function that takes a M44Param, and must implicitly convert it to an
+// Imath::M44f.
+Imath::M44f
+m44func(M44fParam p)
+{
+    return p;
+}
+
+
+static void
+test_vecparam()
+{
+    Strutil::print("Testing vec proxy passing\n");
+
+    // Can we pass an Imath::V3f as a V3fParam?
+    Imath::V3f iv3f(1.0f, 2.0f, 3.0f);
+    OIIO_CHECK_EQUAL(v3ffunc(iv3f), iv3f);
+
+    // Can we pass a raw float[3] array as a V3fParam?
+    float arr[3] = { 1.0, 2.0, 3.0 };
+    OIIO_CHECK_EQUAL(v3ffunc(arr), iv3f);
+
+    // Can we pass a std::array<float,3> as a V3fParam?
+    std::array<float, 3> stdarr { 1.0, 2.0, 3.0 };
+    OIIO_CHECK_EQUAL(v3ffunc(stdarr), iv3f);
+
+    // Can we pass an initializer list as a V3fParam?
+    OIIO_CHECK_EQUAL(v3ffunc({ 1.0f, 2.0f, 3.0f }), iv3f);
+
+    // Can we pass a custom vector class with xyz components as a V3fParam?
+    XYZVector xyzv(1.0f, 2.0f, 3.0f);
+    OIIO_CHECK_EQUAL(v3ffunc(xyzv), iv3f);
+
+    // Can we pass a custom vector class with array components as a V3fParam?
+    Arr3Vector av(1.0f, 2.0f, 3.0f);
+    OIIO_CHECK_EQUAL(v3ffunc(av), iv3f);
+
+    // Can we pass our simd::vfloat3 as a V3fParam?
+    simd::vfloat3 vf3(1.0f, 2.0f, 3.0f);
+    OIIO_CHECK_EQUAL(v3ffunc(vf3), iv3f);
+
+    OIIO_CHECK_ASSERT((has_xyz<XYZVector, float>::value));
+    OIIO_CHECK_ASSERT((has_subscript_N<Arr3Vector, float, 3>::value));
+    OIIO_CHECK_ASSERT((has_subscript_N<simd::vfloat3, float, 3>::value));
+
+    Imath::M44f m44f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+    OIIO_CHECK_EQUAL(m44func(m44f), m44f);
+}
+
+
+
 int
 main(int argc, char* argv[])
 {
@@ -540,6 +724,15 @@ main(int argc, char* argv[])
     // will override this, since it comes before the getargs() call.
     iterations /= 10;
     ntrials = 1;
+#endif
+
+#if OIIO_SIMD_SSE && !OIIO_F16C_ENABLED
+    // Some rogue libraries (and icc runtime libs?) will turn on the cpu mode
+    // that causes floating point denormals get crushed to 0.0 in certain ops,
+    // and leave it that way! This can give us the wrong results for the
+    // particular sequence of SSE intrinsics we use to convert half->float for
+    // exr files containing pixels with denorm values.
+    simd::set_denorms_zero_mode(false);
 #endif
 
     getargs(argc, argv);
@@ -577,7 +770,7 @@ main(int argc, char* argv[])
     benchmark_convert_type<half, float>();
     benchmark_convert_type<float, half>();
     benchmark_convert_type<float, float>();
-    // convertion to a type smaller in bytes causes error
+    // conversion to a type smaller in bytes causes error
     //    std::cout << "round trip convert float/short/float\n";
     //    test_convert_type<float,short> ();
     //    std::cout << "round trip convert unsigned float/char/float\n";
@@ -591,8 +784,12 @@ main(int argc, char* argv[])
 
     test_bit_range_convert();
     test_packbits();
+    test_bitcast();
+    test_swap_endian();
 
     test_interpolate_linear();
+
+    test_vecparam();
 
     return unit_test_failures != 0;
 }

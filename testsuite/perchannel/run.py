@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 # Test reading and writing of files with per-channel data formats.
 
 
@@ -29,6 +33,17 @@ command += diff_command (image, "spiral1.exr")
 command += (oiio_app("oiiotool") + image + " -o spiral2.exr ;\n")
 command += diff_command (image, "spiral2.exr")
 
+# Create a file with per-channel data types, make sure that works
+command += oiiotool("--create 64x64 4 --d R=half,G=float,B=half,A=float -o hfhf.exr")
+command += info_command("hfhf.exr", verbose=False)
+
+# Make sure that read/write unmodified will preserve the channel types
+command += oiiotool("hfhf.exr -o hfhf_copy.exr")
+command += info_command("hfhf_copy.exr", verbose=False)
+
+# Make sure that read/modify/write preserves the channel types of the input
+command += oiiotool("hfhf.exr -mulc 0.5,0.5,0.5,0.5 -o hfhf_mod.exr")
+command += info_command("hfhf_mod.exr", verbose=False)
 
 #print "Running this command:\n" + command + "\n"
 

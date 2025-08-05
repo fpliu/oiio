@@ -1,14 +1,11 @@
-# Copyright 2008-present Contributors to the OpenImageIO project.
-# SPDX-License-Identifier: BSD-3-Clause
-# https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
 
-if (WEBP_FOUND)
+if (WebP_FOUND)
     add_oiio_plugin (webpinput.cpp webpoutput.cpp
-                     INCLUDE_DIRS ${WEBP_INCLUDE_DIR}
-                     LINK_LIBRARIES ${WEBP_LIBRARY}
-                     DEFINITIONS "-DUSE_WEBP=1")
+                     LINK_LIBRARIES WebP::webp WebP::webpdemux
+                     DEFINITIONS "USE_WEBP=1")
 else ()
     message (STATUS "WebP plugin will not be built")
 endif()
-
-

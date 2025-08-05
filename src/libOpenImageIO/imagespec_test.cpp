@@ -1,15 +1,52 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
-#include <OpenImageIO/fmath.h>
 #include <OpenImageIO/imagebuf.h>
 #include <OpenImageIO/imageio.h>
 #include <OpenImageIO/unittest.h>
 
 using namespace OIIO;
 
+const char* imagespec_xml_string = R"EOF(
+<ImageSpec version="24">
+<x>0</x>
+<y>0</y>
+<z>0</z>
+<width>1920</width>
+<height>1080</height>
+<depth>1</depth>
+<full_x>0</full_x>
+<full_y>0</full_y>
+<full_z>0</full_z>
+<full_width>1920</full_width>
+<full_height>1080</full_height>
+<full_depth>1</full_depth>
+<tile_width>1920</tile_width>
+<tile_height>1080</tile_height>
+<tile_depth>1</tile_depth>
+<format>float</format>
+<nchannels>4</nchannels>
+<channelnames>
+<channelname>R</channelname>
+<channelname>G</channelname>
+<channelname>B</channelname>
+<channelname>A</channelname>
+</channelnames>
+<alpha_channel>3</alpha_channel>
+<z_channel>-1</z_channel>
+<deep>0</deep>
+<attrib name="oiio:ColorSpace" type="string">scene_linear</attrib>
+<attrib name="compression" type="string">none</attrib>
+<attrib name="acesImageContainerFlag" type="int">1</attrib>
+<attrib name="chromaticities" type="float[8]">0.7347, 0.2653, 0, 1, 0.0001, -0.077, 0.32168, 0.33767</attrib>
+<attrib name="PixelAspectRatio" type="float">1</attrib>
+<attrib name="screenWindowCenter" type="float2">0, 0</attrib>
+<attrib name="screenWindowWidth" type="float">1</attrib>
+<attrib name="oiio:subimages" type="int">1</attrib>
+</ImageSpec>
+)EOF";
 
 void
 test_imagespec_pixels()
@@ -44,19 +81,42 @@ test_imagespec_pixels()
     OIIO_CHECK_EQUAL((size_t)(BYTES_IN_FLOAT * CHANNELS), spec.pixel_bytes());
     OIIO_CHECK_EQUAL((imagesize_t)(BYTES_IN_FLOAT * CHANNELS * WIDTH),
                      spec.scanline_bytes());
+    OIIO_CHECK_EQUAL((imagesize_t)(sizeof(uint16_t) * CHANNELS * WIDTH),
+                     spec.scanline_bytes(TypeUInt16));
+    OIIO_CHECK_EQUAL(spec.scanline_bytes(true),
+                     spec.scanline_bytes(TypeUnknown));
     OIIO_CHECK_EQUAL((imagesize_t)(WIDTH * HEIGHT), spec.image_pixels());
 
     // check that the magnitude is right (not clamped) -- should be about > 2^40
-    long long expected_bytes = BYTES_IN_FLOAT * CHANNELS * WIDTH * HEIGHT;
+    uint64_t expected_bytes = BYTES_IN_FLOAT * CHANNELS * WIDTH * HEIGHT;
     // log (x) / log (2) = log2 (x)
     // log (2^32) / log (2) = log2 (2^32) = 32
     // log (2^32) * M_LOG2E = 32
     double log2_result = log((double)expected_bytes) * M_LOG2E;
     OIIO_CHECK_LT(40, log2_result);
-    OIIO_CHECK_EQUAL((imagesize_t)expected_bytes, spec.image_bytes());
+    OIIO_CHECK_EQUAL(expected_bytes, spec.image_bytes());
 
     std::cout << "expected_bytes = " << expected_bytes << ", log "
               << log((double)expected_bytes) << std::endl;
+
+    OIIO_CHECK_EQUAL(spec.image_bytes(true), spec.image_bytes(TypeUnknown));
+    OIIO_CHECK_EQUAL(spec.image_bytes(false), spec.image_bytes(TypeFloat));
+
+    // Check tiles -- should be zero
+    OIIO_CHECK_EQUAL(spec.tile_bytes(), 0);
+    OIIO_CHECK_EQUAL(spec.tile_bytes(TypeUnknown), 0);
+    OIIO_CHECK_EQUAL(spec.tile_bytes(TypeUInt16), 0);
+    // Make apparent tiles and check
+    spec.tile_width  = 7;
+    spec.tile_height = 5;
+    spec.tile_depth  = 3;
+    OIIO_CHECK_EQUAL((imagesize_t)(BYTES_IN_FLOAT * spec.nchannels
+                                   * spec.tile_pixels()),
+                     spec.tile_bytes());
+    OIIO_CHECK_EQUAL((imagesize_t)(sizeof(uint16_t) * spec.nchannels
+                                   * spec.tile_pixels()),
+                     spec.tile_bytes(TypeUInt16));
+    OIIO_CHECK_EQUAL(spec.tile_bytes(true), spec.tile_bytes(TypeUnknown));
 }
 
 
@@ -259,7 +319,7 @@ static void
 test_imagespec_from_ROI()
 {
     ROI roi(0, 640, 0, 480, 0, 1, 0, 3);
-    ImageSpec spec(roi, TypeDesc::FLOAT);
+    ImageSpec spec(roi, "float");
     OIIO_CHECK_EQUAL(spec.nchannels, 3);
     OIIO_CHECK_EQUAL(spec.width, 640);
     OIIO_CHECK_EQUAL(spec.height, 480);
@@ -267,6 +327,28 @@ test_imagespec_from_ROI()
     OIIO_CHECK_EQUAL(spec.full_width, 640);
     OIIO_CHECK_EQUAL(spec.full_height, 480);
     OIIO_CHECK_EQUAL(spec.full_depth, 1);
+    OIIO_CHECK_EQUAL(spec.format, TypeFloat);
+}
+
+static void
+test_imagespec_from_xml()
+{
+    std::cout << "test_imagespec_from_xml\n";
+    ImageSpec spec;
+    spec.from_xml(imagespec_xml_string);
+    print("  spec heapsize = {}\n", pvt::heapsize(spec));
+    print("  spec footprint = {}\n", pvt::footprint(spec));
+
+    OIIO_CHECK_EQUAL(spec.nchannels, 4);
+    OIIO_CHECK_EQUAL(spec.width, 1920);
+    OIIO_CHECK_EQUAL(spec.height, 1080);
+    OIIO_CHECK_EQUAL(spec.depth, 1);
+    OIIO_CHECK_EQUAL(spec.full_width, 1920);
+    OIIO_CHECK_EQUAL(spec.full_height, 1080);
+    OIIO_CHECK_EQUAL(spec.full_depth, 1);
+    OIIO_CHECK_EQUAL(spec.format, TypeFloat);
+    OIIO_CHECK_EQUAL(spec.get_string_attribute("oiio:ColorSpace"),
+                     "scene_linear");
 }
 
 
@@ -274,11 +356,14 @@ test_imagespec_from_ROI()
 int
 main(int /*argc*/, char* /*argv*/[])
 {
+    print("sizeof(ImageSpec) = {}\n", sizeof(ImageSpec));
+
     test_imagespec_pixels();
     test_imagespec_metadata_val();
     test_imagespec_attribute_from_string();
     test_get_attribute();
     test_imagespec_from_ROI();
+    test_imagespec_from_xml();
 
     return unit_test_failures;
 }

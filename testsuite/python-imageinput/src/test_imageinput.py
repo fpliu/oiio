@@ -1,15 +1,20 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-from __future__ import absolute_import
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+from __future__ import annotations
+
 import OpenImageIO as oiio
+
 import os
 
 OIIO_TESTSUITE_IMAGEDIR = os.getenv('OIIO_TESTSUITE_IMAGEDIR',
-                                    '../../../../../oiio-images')
+                                    '../oiio-images')
 
 # Print the contents of an ImageSpec
-def print_imagespec (spec, subimage=0, mip=0, msg="") :
+def print_imagespec (spec: oiio.ImageSpec, subimage=0, mip=0, msg="") :
     if msg != "" :
         print (str(msg))
     if spec.depth <= 1 :
@@ -37,13 +42,13 @@ def print_imagespec (spec, subimage=0, mip=0, msg="") :
     print ("  deep = ", spec.deep)
     for i in range(len(spec.extra_attribs)) :
         if type(spec.extra_attribs[i].value) == str :
-            print (" ", spec.extra_attribs[i].name, "= \"" + spec.extra_attribs[i].value + "\"")
+            print ("  {} = \"{}\"".format(spec.extra_attribs[i].name, spec.extra_attribs[i].value))
         else :
-            print (" ", spec.extra_attribs[i].name, "=", spec.extra_attribs[i].value)
+            print ("  {} = {}".format(spec.extra_attribs[i].name, spec.extra_attribs[i].value))
 
 
 
-def poor_mans_iinfo (filename) :
+def poor_mans_iinfo (filename: str) :
     input = oiio.ImageInput.open (filename)
     if not input :
         print ('Could not open "' + filename + '"')
@@ -75,7 +80,7 @@ def poor_mans_iinfo (filename) :
 # pixel values ot prove that we have the right data. Read nchannels
 # channels, if nonzero, otherwise read the full channel range in the
 # file.
-def test_readimage (filename, sub=0, mip=0, type=oiio.UNKNOWN,
+def test_readimage (filename: str, sub=0, mip=0, type: oiio.BASETYPE | str = oiio.UNKNOWN,
                     method="image", nchannels=0,
                     print_pixels = True, keep_unknown=False) :
     input = oiio.ImageInput.open (filename)
@@ -131,7 +136,7 @@ def test_readimage (filename, sub=0, mip=0, type=oiio.UNKNOWN,
 
 # Read the image, one scanline at a time, print a couple values
 # at particular locations to make sure we have the correct data.
-def test_readscanline (filename, sub=0, mip=0, type=oiio.UNKNOWN) :
+def test_readscanline (filename: str, sub=0, mip=0, type: oiio.BASETYPE | str = oiio.UNKNOWN) :
     input = oiio.ImageInput.open (filename)
     if not input :
         print ('Could not open "' + filename + '"')
@@ -161,7 +166,7 @@ def test_readscanline (filename, sub=0, mip=0, type=oiio.UNKNOWN) :
 
 # Read the whole image, one tile at a time, print a couple values
 # at particular locations to make sure we have the correct data.
-def test_readtile (filename, sub=0, mip=0, type=oiio.UNKNOWN) :
+def test_readtile (filename: str, sub=0, mip=0, type: oiio.BASETYPE | str = oiio.UNKNOWN) :
     input = oiio.ImageInput.open (filename)
     if not input :
         print ('Could not open "' + filename + '"')
@@ -186,12 +191,13 @@ def test_readtile (filename, sub=0, mip=0, type=oiio.UNKNOWN) :
     print ("@", (x,y), "=", data[y,x])
     (tx,ty) = (spec.x+2*spec.tile_width, spec.y+2*spec.tile_height)
     data = input.read_tile (tx+spec.x, ty+spec.y, spec.z, type)
+    assert data is not None
     print ("@", (x,y), "=", data[y,x])
     input.close ()
     print ()
 
 
-def write (image, filename, format=oiio.UNKNOWN) :
+def write (image: oiio.ImageBuf, filename: str, format: oiio.BASETYPE | str = oiio.UNKNOWN) :
     if not image.has_error :
         image.set_write_format (format)
         image.write (filename)
@@ -218,6 +224,7 @@ def test_tiff_remembering_config() :
     print ("\n  reading as IB with unassoc hint: ", rbuf.get_pixels())
     print ("\n  reading as II with hint, read scanlines backward: ")
     ii = oiio.ImageInput.open("test_unassoc.tif", config)
+    assert ii is not None
     print ("    [1] = ", ii.read_scanline(1))
     print ("    [0] = ", ii.read_scanline(0))
     print ("\n")
@@ -243,6 +250,7 @@ def test_tiff_cmyk() :
     print ("\n  reading as IB with rawcolor=1: ", rbuf.get_pixels())
     print ("\n  reading as II with rawcolor=0, read scanlines backward: ")
     ii = oiio.ImageInput.open(filename)
+    assert ii is not None
     print ("    [1] = ", ii.read_scanline(1))
     print ("    [0] = ", ii.read_scanline(0))
     print ("\n")
@@ -312,6 +320,10 @@ try:
 
     test_tiff_remembering_config()
     test_tiff_cmyk()
+
+    # Test is_imageio_format_name
+    print ("is_imageio_format_name('tiff') =", oiio.is_imageio_format_name('tiff'))
+    print ("is_imageio_format_name('txff') =", oiio.is_imageio_format_name('txff'))
 
     print ("Done.")
 except Exception as detail:

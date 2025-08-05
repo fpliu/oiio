@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 // clang-format off
 
@@ -20,12 +20,11 @@
 #include <utility>
 #include <vector>
 
-#include <OpenImageIO/span.h>
 #include <OpenImageIO/export.h>
-#include <OpenImageIO/fmath.h>
 #include <OpenImageIO/oiioversion.h>
 #include <OpenImageIO/string_view.h>
 
+#include <OpenImageIO/span.h>
 
 
 OIIO_NAMESPACE_BEGIN
@@ -65,7 +64,7 @@ static inline uint64_t mix(uint64_t h) {
 	return h;
 }
 
-inline uint64_t fasthash64(const void *buf, size_t len, uint64_t seed)
+inline uint64_t fasthash64(const void *buf, size_t len, uint64_t seed=1771)
 {
 	const uint64_t    m = 0x880355f21e6d1965ULL;
 	const uint64_t *pos = (const uint64_t *)buf;
@@ -75,7 +74,12 @@ inline uint64_t fasthash64(const void *buf, size_t len, uint64_t seed)
 	uint64_t v;
 
 	while (pos != end) {
+		// This appears to be a false positive which only affects GCC.
+		// https://godbolt.org/z/5q7Y7ndfb
+		OIIO_PRAGMA_WARNING_PUSH
+		OIIO_GCC_ONLY_PRAGMA(GCC diagnostic ignored "-Wmaybe-uninitialized")
 		v  = *pos++;
+		OIIO_PRAGMA_WARNING_POP
 		h ^= mix(v);
 		h *= m;
 	}
@@ -143,6 +147,22 @@ namespace bjhash {
 // Bob Jenkins "lookup3" hashes:  http://burtleburtle.net/bob/c/lookup3.c
 // It's in the public domain.
 
+OIIO_FORCEINLINE OIIO_HOSTDEVICE uint32_t
+rotl32(uint32_t x, int k)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 320
+    return __funnelshift_lc(x, x, k);
+#else
+    return (x << k) | (x >> (32 - k));
+#endif
+}
+
+OIIO_FORCEINLINE OIIO_HOSTDEVICE uint64_t
+rotl64(uint64_t x, int k)
+{
+    return (x << k) | (x >> (64 - k));
+}
+
 // Mix up the bits of a, b, and c (changing their values in place).
 inline OIIO_HOSTDEVICE void bjmix (uint32_t &a, uint32_t &b, uint32_t &c)
 {
@@ -198,6 +218,7 @@ uint32_t OIIO_API hashword (const uint32_t *key, size_t nwords,
 // Hash a string without pre-known length.  We use the Jenkins
 // one-at-a-time hash (http://en.wikipedia.org/wiki/Jenkins_hash_function),
 // which seems to be a good speed/quality/requirements compromise.
+// Note that this is only returning a 32 bit hash space.
 inline size_t
 strhash (const char *s)
 {
@@ -219,6 +240,7 @@ strhash (const char *s)
 // Hash a string_view.  We use the Jenkins
 // one-at-a-time hash (http://en.wikipedia.org/wiki/Jenkins_hash_function),
 // which seems to be a good speed/quality/requirements compromise.
+// Note that this is only returning a 32 bit hash space.
 inline size_t
 strhash (string_view s)
 {
@@ -279,20 +301,45 @@ namespace farmhash {
 
 
 #if defined(FARMHASH_UINT128_T_DEFINED)
-inline uint64_t Uint128Low64(const uint128_t x) {
-  return static_cast<uint64_t>(x);
+
+OIIO_HOSTDEVICE inline constexpr uint64_t Uint128Low64(const uint128_t x) {
+    return static_cast<uint64_t>(x);
 }
-inline uint64_t Uint128High64(const uint128_t x) {
-  return static_cast<uint64_t>(x >> 64);
+
+OIIO_HOSTDEVICE inline constexpr uint64_t Uint128High64(const uint128_t x) {
+    return static_cast<uint64_t>(x >> 64);
 }
-inline uint128_t Uint128(uint64_t lo, uint64_t hi) {
-  return lo + (((uint128_t)hi) << 64);
+
+OIIO_HOSTDEVICE inline constexpr uint128_t Uint128(uint64_t lo, uint64_t hi) {
+    return lo + (((uint128_t)hi) << 64);
 }
+
+OIIO_HOSTDEVICE inline constexpr void
+CopyUint128(uint128_t &dst, const uint128_t src) {
+    dst = src;
+}
+
 #else
+
 typedef std::pair<uint64_t, uint64_t> uint128_t;
-inline uint64_t Uint128Low64(const uint128_t x) { return x.first; }
-inline uint64_t Uint128High64(const uint128_t x) { return x.second; }
-inline uint128_t Uint128(uint64_t lo, uint64_t hi) { return uint128_t(lo, hi); }
+OIIO_HOSTDEVICE inline constexpr uint64_t Uint128Low64(const uint128_t x) {
+    return x.first;
+}
+
+OIIO_HOSTDEVICE inline constexpr uint64_t Uint128High64(const uint128_t x) {
+    return x.second;
+}
+
+OIIO_HOSTDEVICE inline constexpr uint128_t Uint128(uint64_t lo, uint64_t hi) {
+    return uint128_t(lo, hi);
+}
+
+OIIO_HOSTDEVICE inline constexpr void
+CopyUint128(uint128_t &dst, const uint128_t src) {
+    dst.first  = src.first;
+    dst.second = src.second;
+
+}
 #endif
 
 
@@ -349,7 +396,7 @@ uint128_t OIIO_API Hash128WithSeed(const char* s, size_t len, uint128_t seed);
 // This is intended to be a reasonably good hash function.
 // May change from time to time, may differ on different platforms, may differ
 // depending on NDEBUG.
-inline uint64_t Hash128to64(uint128_t x) {
+OIIO_HOSTDEVICE inline constexpr uint64_t Hash128to64(uint128_t x) {
   // Murmur-inspired hashing.
   const uint64_t kMul = 0x9ddfea08eb382d69ULL;
   uint64_t a = (Uint128Low64(x) ^ Uint128High64(x)) * kMul;
@@ -373,7 +420,7 @@ uint128_t OIIO_API Fingerprint128(const char* s, size_t len);
 
 // This is intended to be a good fingerprinting primitive.
 // See below for more overloads.
-inline uint64_t Fingerprint(uint128_t x) {
+OIIO_HOSTDEVICE inline constexpr uint64_t Fingerprint(uint128_t x) {
   // Murmur-inspired hashing.
   const uint64_t kMul = 0x9ddfea08eb382d69ULL;
   uint64_t a = (Uint128Low64(x) ^ Uint128High64(x)) * kMul;
@@ -387,7 +434,7 @@ inline uint64_t Fingerprint(uint128_t x) {
 }
 
 // This is intended to be a good fingerprinting primitive.
-inline uint64_t Fingerprint(uint64_t x) {
+OIIO_HOSTDEVICE inline constexpr uint64_t Fingerprint(uint64_t x) {
   // Murmur-inspired hashing.
   const uint64_t kMul = 0x9ddfea08eb382d69ULL;
   uint64_t b = x * kMul;
@@ -525,11 +572,21 @@ public:
     SHA1 (const void *data=NULL, size_t size=0);
     ~SHA1 ();
 
+    SHA1 (string_view str) : SHA1(str.data(), str.size()) { }
+
+    template<typename T>
+    SHA1 (span<T> v) : SHA1(v.data(), v.size()) { }
+
     /// Append more data
     void append (const void *data, size_t size);
 
+    /// Append more data from a string_view
+    void append (string_view s) {
+        append(s.data(), s.size());
+    }
+
     /// Append more data from a span, without thinking about sizes.
-    template<class T> void append (span<T> v) {
+    template<typename T> void append (span<T> v) {
         append (v.data(), v.size()*sizeof(T));
     }
 

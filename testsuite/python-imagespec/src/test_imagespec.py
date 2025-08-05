@@ -1,12 +1,17 @@
 #!/usr/bin/env python
 
-from __future__ import print_function
-from __future__ import absolute_import
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
+from __future__ import annotations
+
+import numpy
 import OpenImageIO as oiio
 
 
 # Print the contents of an ImageSpec
-def print_imagespec (spec, msg="") :
+def print_imagespec (spec: oiio.ImageSpec, msg="") :
     if msg != "" :
         print (str(msg))
     print ("  resolution (width,height,depth) = ", spec.width, spec.height, spec.depth)
@@ -72,9 +77,9 @@ try:
     print ("  channel_bytes(1) =", s.channel_bytes(1), "native", s.channel_bytes(1,True))
     print ("  channel_bytes(4) =", s.channel_bytes(4), "native", s.channel_bytes(4,True))
     print ("pixel bytes =", s.pixel_bytes(), "native", s.pixel_bytes(True))
-    print ("scanline bytes =", s.scanline_bytes(), "native", s.scanline_bytes(True))
-    print ("tile bytes =", s.tile_bytes(), "native", s.tile_bytes(True))
-    print ("image bytes =", s.image_bytes(), "native", s.image_bytes(True))
+    print ("scanline bytes =", s.scanline_bytes(), "native", s.scanline_bytes(True), "if uint16", s.scanline_bytes("uint16"))
+    print ("tile bytes =", s.tile_bytes(), "native", s.tile_bytes(True), "if uint16", s.tile_bytes("uint16"))
+    print ("image bytes =", s.image_bytes(), "native", s.image_bytes(True), "if uint16", s.image_bytes("uint16"))
     print ("tile pixels =", s.tile_pixels())
     print ("image_pixels =", s.image_pixels())
     print ("size_t_safe =", s.size_t_safe())
@@ -87,10 +92,11 @@ try:
     s.attribute ("foo_str", "blah")
     s.attribute ("foo_int", 14)
     s.attribute ("foo_float", 3.14)
-    s.attribute ("foo_vector", oiio.TypeDesc.TypeVector, (1, 0, 11))
-    s.attribute ("foo_matrix", oiio.TypeDesc.TypeMatrix,
+    s.attribute ("foo_vector", oiio.TypeVector, (1, 0, 11))
+    s.attribute ("foo_matrix", oiio.TypeMatrix,
                  (1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1))
-    s.attribute ("smpte:TimeCode", oiio.TypeDesc.TypeTimeCode, (18356486, 4294967295))
+    s.attribute ("smpte:TimeCode", oiio.TypeTimeCode, (18356486, 4294967295))
+    s.attribute ("ucarr", "uint8[10]", numpy.array([49, 50, 51, 0, 0, 97, 98, 99, 1, 88], dtype='B'))
     s["delfoo_str"] =  "egg"
     s["delfoo_int"] = 29
     s["delfoo_float"] = 99.5
@@ -111,9 +117,29 @@ try:
     print ("getattribute('foo_matrix') retrieves", s.getattribute("foo_matrix"))
     print ("getattribute('foo_no') retrieves", s.getattribute("foo_no"))
     print ("getattribute('smpte:TimeCode') retrieves", s.getattribute("smpte:TimeCode"))
+    print ("getattribute('ucarr') retrieves", s.getattribute("ucarr"))
+    print ("getattribute('unknown') retrieves", s.getattribute("unknown"))
+    print ("s.get('foo_int') =", s.get('foo_int'))
+    print ("s.get('ucarr') retrieves", s.get("ucarr"))
+    try :
+        print ("s['ucarr'] retrieves", s['ucarr'])
+    except KeyError :
+        print ("s['ucarr'] not found")
+    print ("s.get('unknown') =", s.get('unknown'))
+    print ("s.get('unknown', 123) =", s.get('unknown'))
     print ("s['delfoo_float'] =", s['delfoo_float'])
     print ("s['delfoo_int'] =", s['delfoo_int'])
     print ("s['delfoo_str'] =", s['delfoo_str'])
+    try :
+        print ("s['unknown'] =", s['unknown'])
+    except KeyError :
+        print ("s['unknown'] raised a KeyError (as expected)")
+    except :
+        print ("s['unknown'] threw an unknown exception (oh no!)")
+    print("'foo_int' in s =", "foo_int" in s)
+    print("'unknown' in s =", "unknown" in s)
+    s["extra"] = 1  # add 'extra', then delete it
+    del s["extra"]  # it should not appear in the serialization below
     print ()
 
     print ("extra_attribs size is", len(s.extra_attribs))
@@ -125,20 +151,34 @@ try:
     print (s.serialize("xml"))
     print ("serialize(text, human):")
     print (s.serialize("text", "detailedhuman"))
+    print ()
+
+    s.attribute("dog", "Spot")
+    print ("Added dog: ", s.getattribute("dog"))
+    s.erase_attribute("dog")
+    print ("After erasing dog, dog = ", s.getattribute("dog"))
+    print()
 
     # test initialization from ROI
     print ("Testing construction from ROI:")
     sroi = oiio.ImageSpec (oiio.ROI(0,640,0,480,0,1,0,3), oiio.FLOAT);
     print_imagespec (sroi)
 
+    print ("\nTesting set_colorspace:")
+    s = oiio.ImageSpec()
+    s.set_colorspace("sRGB")
+    print ("  after set_colorspace('sRGB'):", s.get_string_attribute("oiio:ColorSpace"))
+    s.set_colorspace("")
+    print ("  after set_colorspace(''):", s.get_string_attribute("oiio:ColorSpace"))
+
     # Also test global OIIO functions here
     print ("\nTesting global attribute store/retrieve:")
     oiio.attribute ("plugin_searchpath", "perfect")
     print ("get_string_attribute plugin_searchpath : ", oiio.get_string_attribute ("plugin_searchpath", "bad"))
     print ("get_int_attribute plugin_searchpath : ", oiio.get_int_attribute ("plugin_searchpath", 0))
-    print ("getattribute TypeString plugin_searchpath : ", oiio.getattribute ("plugin_searchpath", oiio.TypeDesc.TypeString))
-    print ("getattribute TypeFloat plugin_searchpath : ", oiio.getattribute ("plugin_searchpath", oiio.TypeDesc.TypeFloat))
-    print ("getattribute TypeString blahblah : ", oiio.getattribute ("blahblah", oiio.TypeDesc.TypeString))
+    print ("getattribute TypeString plugin_searchpath : ", oiio.getattribute ("plugin_searchpath", oiio.TypeString))
+    print ("getattribute TypeFloat plugin_searchpath : ", oiio.getattribute ("plugin_searchpath", oiio.TypeFloat))
+    print ("getattribute TypeString blahblah : ", oiio.getattribute ("blahblah", oiio.TypeString))
 
     print ("Done.")
 except Exception as detail:

@@ -1,15 +1,80 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include "py_oiio.h"
 
 #include <memory>
 
+#include <OpenImageIO/filesystem.h>
 #include <OpenImageIO/platform.h>
 
 
 namespace PyOpenImageIO {
+
+
+
+static ImageBuf
+ImageBuf_from_buffer(const py::buffer& buffer)
+{
+    ImageBuf ib;
+    const py::buffer_info info = buffer.request();
+    TypeDesc format;
+    if (info.format.size())
+        format = typedesc_from_python_array_code(info.format);
+    if (format == TypeUnknown)
+        return ib;
+    // Strutil::print("IB from {} buffer: dims = {}\n", format, info.ndim);
+    // for (int i = 0; i < info.ndim; ++i)
+    //     Strutil::print("IB from buffer: dim[{}]: size = {}, stride = {}\n", i,
+    //                    info.shape[i], info.strides[i]);
+    if (size_t(info.strides[info.ndim - 1]) != format.size()) {
+        ib.errorfmt(
+            "ImageBuf-from-numpy-array must have contiguous stride within pixels");
+        return ib;
+    }
+
+    int width = 1, height = 1, depth = 1, nchans = 1;
+    stride_t xstride = AutoStride, ystride = AutoStride, zstride = AutoStride;
+    if (info.ndim == 3) {
+        // Assume [y][x][c]
+        width   = info.shape[1];
+        height  = info.shape[0];
+        nchans  = info.shape[2];
+        xstride = info.strides[1];
+        ystride = info.strides[0];
+    } else if (info.ndim == 2) {
+        // Assume [y][x], single channel
+        width   = info.shape[1];
+        height  = info.shape[0];
+        xstride = info.strides[1];
+        ystride = info.strides[0];
+    } else if (info.ndim == 4) {
+        // Assume volume [z][y][x][c]
+        width   = info.shape[2];
+        height  = info.shape[1];
+        depth   = info.shape[0];
+        nchans  = info.shape[3];
+        xstride = info.strides[2];
+        ystride = info.strides[1];
+        zstride = info.strides[0];
+    } else {
+        ib.errorfmt(
+            "ImageBuf-from-numpy-array must have 2, 3, or 4 dimensions");
+        return ib;
+    }
+
+    ImageSpec spec(width, height, nchans, format);
+    spec.depth      = depth;
+    spec.full_depth = depth;
+    ib.reset(spec, InitializePixels::No);
+    image_span<const std::byte> bufspan(reinterpret_cast<std::byte*>(info.ptr),
+                                        nchans, width, height, depth,
+                                        format.size(), xstride, ystride,
+                                        zstride, format.size());
+    ib.set_pixels(get_roi(spec), format, bufspan);
+    return ib;
+}
 
 
 
@@ -19,9 +84,9 @@ ImageBuf_getpixel(const ImageBuf& buf, int x, int y, int z = 0,
 {
     ImageBuf::WrapMode wrap = ImageBuf::WrapMode_from_string(wrapname);
     int nchans              = buf.nchannels();
-    float* pixel            = OIIO_ALLOCA(float, nchans);
-    buf.getpixel(x, y, z, pixel, nchans, wrap);
-    return C_to_tuple(pixel, nchans);
+    span<float> pixel       = OIIO_ALLOCA_SPAN(float, nchans);
+    buf.getpixel(x, y, z, pixel, wrap);
+    return C_to_tuple(pixel);
 }
 
 
@@ -32,9 +97,9 @@ ImageBuf_interppixel(const ImageBuf& buf, float x, float y,
 {
     ImageBuf::WrapMode wrap = ImageBuf::WrapMode_from_string(wrapname);
     int nchans              = buf.nchannels();
-    float* pixel            = OIIO_ALLOCA(float, nchans);
+    span<float> pixel       = OIIO_ALLOCA_SPAN(float, nchans);
     buf.interppixel(x, y, pixel, wrap);
-    return C_to_tuple(pixel, nchans);
+    return C_to_tuple(pixel);
 }
 
 
@@ -45,9 +110,9 @@ ImageBuf_interppixel_NDC(const ImageBuf& buf, float x, float y,
 {
     ImageBuf::WrapMode wrap = ImageBuf::WrapMode_from_string(wrapname);
     int nchans              = buf.nchannels();
-    float* pixel            = OIIO_ALLOCA(float, nchans);
+    span<float> pixel       = OIIO_ALLOCA_SPAN(float, nchans);
     buf.interppixel_NDC(x, y, pixel, wrap);
-    return C_to_tuple(pixel, nchans);
+    return C_to_tuple(pixel);
 }
 
 
@@ -58,9 +123,9 @@ ImageBuf_interppixel_bicubic(const ImageBuf& buf, float x, float y,
 {
     ImageBuf::WrapMode wrap = ImageBuf::WrapMode_from_string(wrapname);
     int nchans              = buf.nchannels();
-    float* pixel            = OIIO_ALLOCA(float, nchans);
+    span<float> pixel       = OIIO_ALLOCA_SPAN(float, nchans);
     buf.interppixel_bicubic(x, y, pixel, wrap);
-    return C_to_tuple(pixel, nchans);
+    return C_to_tuple(pixel);
 }
 
 
@@ -71,9 +136,9 @@ ImageBuf_interppixel_bicubic_NDC(const ImageBuf& buf, float x, float y,
 {
     ImageBuf::WrapMode wrap = ImageBuf::WrapMode_from_string(wrapname);
     int nchans              = buf.nchannels();
-    float* pixel            = OIIO_ALLOCA(float, nchans);
+    span<float> pixel       = OIIO_ALLOCA_SPAN(float, nchans);
     buf.interppixel_bicubic_NDC(x, y, pixel, wrap);
-    return C_to_tuple(pixel, nchans);
+    return C_to_tuple(pixel);
 }
 
 
@@ -115,8 +180,8 @@ ImageBuf_get_pixels(const ImageBuf& buf, TypeDesc format, ROI roi = ROI::All())
     roi.chend = std::min(roi.chend, buf.nchannels());
 
     size_t size = (size_t)roi.npixels() * roi.nchannels() * format.size();
-    std::unique_ptr<char[]> data(new char[size]);
-    if (buf.get_pixels(roi, format, &data[0]))
+    std::unique_ptr<std::byte[]> data(new std::byte[size]);
+    if (buf.get_pixels(roi, format, make_span(data.get(), size)))
         return make_numpy_array(format, data.release(),
                                 buf.spec().depth > 1 ? 4 : 3, roi.nchannels(),
                                 roi.width(), roi.height(), roi.depth());
@@ -155,21 +220,24 @@ ImageBuf_set_pixels_buffer(ImageBuf& self, ROI roi, py::buffer& buffer)
     oiio_bufinfo buf(buffer.request(), roi.nchannels(), roi.width(),
                      roi.height(), roi.depth(), self.spec().depth > 1 ? 3 : 2);
     if (!buf.data || buf.error.size()) {
-        self.errorf("set_pixels error: %s",
-                    buf.error.size() ? buf.error.c_str() : "unspecified");
+        self.errorfmt("set_pixels error: {}",
+                      buf.error.size() ? buf.error.c_str() : "unspecified");
         return false;  // failed sanity checks
     }
     if (!buf.data || buf.size != size) {
-        self.error(
-            "ImageBuf.set_pixels: array size (%d) did not match ROI size w=%d h=%d d=%d ch=%d (total %d)",
+        self.errorfmt(
+            "ImageBuf.set_pixels: array size ({}) did not match ROI size w={} h={} d={} ch={} (total {})",
             buf.size, roi.width(), roi.height(), roi.depth(), roi.nchannels(),
             size);
         return false;
     }
 
     py::gil_scoped_release gil;
-    return self.set_pixels(roi, buf.format, buf.data, buf.xstride, buf.ystride,
-                           buf.zstride);
+    auto bufspan = cspan_from_buffer(buf.data, buf.format, roi.nchannels(),
+                                     roi.width(), roi.height(), roi.depth(),
+                                     buf.xstride, buf.ystride, buf.zstride);
+    return self.set_pixels(roi, buf.format, bufspan, nullptr, buf.xstride,
+                           buf.ystride, buf.zstride);
 }
 
 
@@ -180,6 +248,35 @@ ImageBuf_set_write_format(ImageBuf& self, const py::object& py_channelformats)
     std::vector<TypeDesc> formats;
     py_to_stdvector(formats, py_channelformats);
     self.set_write_format(formats);
+}
+
+
+
+py::bytes
+ImageBuf_repr_png(const ImageBuf& self)
+{
+    ImageSpec original_spec = self.spec();
+
+    if (original_spec.width < 1 || original_spec.height < 1) {
+        return py::bytes();
+    }
+
+    // Alter the spec to make sure it dithers when outputting to 8 bit PNG
+    ImageSpec altered_spec = original_spec;
+    altered_spec.attribute("oiio:dither", 1);
+
+    std::vector<unsigned char> file_buffer;         // bytes will go here
+    Filesystem::IOVecOutput file_vec(file_buffer);  // I/O proxy object
+
+    std::unique_ptr<ImageOutput> out = ImageOutput::create("temp.png",
+                                                           &file_vec);
+    out->open("temp.png", altered_spec);
+    self.write(out.get());
+    out->close();
+
+    // Cast to const char* and return as python bytes
+    const char* char_ptr = reinterpret_cast<const char*>(file_buffer.data());
+    return py::bytes(char_ptr, file_buffer.size());
 }
 
 
@@ -203,6 +300,10 @@ declare_imagebuf(py::module& m)
                  return ImageBuf(name, subimage, miplevel, nullptr, &config);
              }),
              "name"_a, "subimage"_a, "miplevel"_a, "config"_a)
+        .def(py::init([](const py::buffer& buffer) {
+                 return ImageBuf_from_buffer(buffer);
+             }),
+             "buffer"_a)
         .def("clear", &ImageBuf::clear)
         .def(
             "reset",
@@ -224,6 +325,13 @@ declare_imagebuf(py::module& m)
                 self.reset(spec, z);
             },
             "spec"_a, "zero"_a = true)
+        .def(
+            "reset",
+            [](ImageBuf& self, const py::buffer& buffer) {
+                self = ImageBuf_from_buffer(buffer);
+            },
+            "buffer"_a)
+
         .def_property_readonly("initialized",
                                [](const ImageBuf& self) {
                                    return self.initialized();
@@ -233,7 +341,7 @@ declare_imagebuf(py::module& m)
             [](ImageBuf& self, std::string filename, int subimage,
                int miplevel) {
                 py::gil_scoped_release gil;
-                self.init_spec(filename, subimage, miplevel);
+                return self.init_spec(filename, subimage, miplevel);
             },
             "filename"_a, "subimage"_a = 0, "miplevel"_a = 0)
         .def(
@@ -265,10 +373,17 @@ declare_imagebuf(py::module& m)
             },
             "filename"_a, "dtype"_a = TypeUnknown, "fileformat"_a = "")
         .def(
-            "make_writeable",
+            "write",
+            [](ImageBuf& self, ImageOutput& out) {
+                py::gil_scoped_release gil;
+                return self.write(&out);
+            },
+            "out"_a)
+        .def(
+            "make_writable",
             [](ImageBuf& self, bool keep_cache_type) {
                 py::gil_scoped_release gil;
-                return self.make_writeable(keep_cache_type);
+                return self.make_writable(keep_cache_type);
             },
             "keep_cache_type"_a = false)
         .def("set_write_format", &ImageBuf_set_write_format)
@@ -281,6 +396,14 @@ declare_imagebuf(py::module& m)
              py::return_value_policy::reference_internal)
         .def("specmod", &ImageBuf::specmod,
              py::return_value_policy::reference_internal)
+        .def_property_readonly("has_thumbnail",
+                               [](const ImageBuf& self) {
+                                   return self.has_thumbnail();
+                               })
+        .def("clear_thumbnail", &ImageBuf::clear_thumbnail)
+        .def("set_thumbnail", &ImageBuf::set_thumbnail, "thumb"_a)
+        .def("get_thumbnail",
+             [](const ImageBuf& self) { return *self.get_thumbnail(); })
         .def_property_readonly("name",
                                [](const ImageBuf& self) {
                                    return PY_STR(self.name());
@@ -325,13 +448,15 @@ declare_imagebuf(py::module& m)
         .def_property_readonly("pixels_valid", &ImageBuf::pixels_valid)
         .def_property_readonly("pixeltype", &ImageBuf::pixeltype)
         .def_property_readonly("has_error", &ImageBuf::has_error)
-        .def("geterror",
-             [](const ImageBuf& self) { return PY_STR(self.geterror()); })
+        .def(
+            "geterror",
+            [](const ImageBuf& self, bool clear) {
+                return PY_STR(self.geterror(clear));
+            },
+            "clear"_a = true)
 
         .def("pixelindex", &ImageBuf::pixelindex, "x"_a, "y"_a, "z"_a,
              "check_range"_a = false)
-        .def("copy_metadata", &ImageBuf::copy_metadata)
-        .def("copy_pixels", &ImageBuf::copy_pixels)
         .def(
             "copy",
             [](ImageBuf& self, const ImageBuf& src, TypeDesc format) {
@@ -346,6 +471,15 @@ declare_imagebuf(py::module& m)
                 return src.copy(format);
             },
             "format"_a = TypeUnknown)
+        .def("copy_pixels", &ImageBuf::copy_pixels)
+        .def("copy_metadata", &ImageBuf::copy_metadata)
+        .def(
+            "merge_metadata",
+            [](ImageBuf& self, const ImageBuf& src, bool override,
+               const std::string& pattern) {
+                self.merge_metadata(src, override, pattern);
+            },
+            "src"_a, "override"_a = false, "pattern"_a = "")
         .def("swap", &ImageBuf::swap)
         .def("getchannel", &ImageBuf::getchannel, "x"_a, "y"_a, "z"_a, "c"_a,
              "wrap"_a = "black")
@@ -388,6 +522,7 @@ declare_imagebuf(py::module& m)
         .def(
             "deepdata", [](ImageBuf& self) { return *self.deepdata(); },
             py::return_value_policy::reference_internal)
+        .def("_repr_png_", &ImageBuf_repr_png)
 
         // FIXME -- do we want to provide pixel iterators?
         ;

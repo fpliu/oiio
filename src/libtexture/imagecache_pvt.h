@@ -1,10 +1,10 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 /// \file
-/// Non-public classes used internally by ImgeCacheImpl.
+/// Non-public classes used internally by ImageCacheImpl.
 
 
 #ifndef OPENIMAGEIO_IMAGECACHE_PVT_H
@@ -12,23 +12,18 @@
 
 #include <tsl/robin_map.h>
 
-#include <boost/container/flat_map.hpp>
-#include <boost/thread/tss.hpp>
-
-#include <OpenEXR/half.h>
-
+#include <OpenImageIO/Imath.h>
 #include <OpenImageIO/export.h>
 #include <OpenImageIO/hash.h>
 #include <OpenImageIO/imagebuf.h>
+#include <OpenImageIO/memory.h>
 #include <OpenImageIO/refcnt.h>
 #include <OpenImageIO/texture.h>
 #include <OpenImageIO/timer.h>
 #include <OpenImageIO/unordered_map_concurrent.h>
 
-
 OIIO_NAMESPACE_BEGIN
 
-namespace pvt {
 
 #ifndef NDEBUG
 #    define IMAGECACHE_TIME_STATS 1
@@ -43,26 +38,25 @@ namespace pvt {
 #define FILE_CACHE_SHARDS 64
 #define TILE_CACHE_SHARDS 128
 
-using boost::thread_specific_ptr;
 
+
+struct TileID;
 class ImageCacheImpl;
-class ImageCachePerThreadInfo;
+struct ImageCacheFootprint;
+
+namespace pvt {
 
 const char*
 texture_format_name(TexFormat f);
 const char*
 texture_type_name(TexFormat f);
 
-#ifdef BOOST_CONTAINER_FLAT_MAP_HPP
-typedef boost::container::flat_map<uint64_t, ImageCacheFile*> UdimLookupMap;
-#else
-typedef unordered_map<uint64_t, ImageCacheFile*> UdimLookupMap;
-#endif
+}  // namespace pvt
 
 
 
 /// Structure to hold IC and TS statistics.  We combine into a single
-/// structure to minimize the number of costly thread_specific_ptr
+/// structure to minimize the number of costly ImageCachePerThreadInfo
 /// retrievals.  If somebody is using the ImageCache without a
 /// TextureSystem, a few extra stats come along for the ride, but this
 /// has no performance penalty.
@@ -116,6 +110,43 @@ struct ImageCacheStatistics {
 
 
 
+namespace pvt {
+
+
+struct UdimInfo {
+    ustring filename;
+    std::atomic<ImageCacheFile*> icfile { nullptr };
+    int u, v;
+
+    UdimInfo() {}
+    UdimInfo(ustring filename, ImageCacheFile* icfile, int u, int v)
+        : filename(filename)
+        , icfile(icfile)
+        , u(u)
+        , v(v)
+    {
+    }
+    UdimInfo(const UdimInfo& other)
+        : filename(other.filename)
+        , icfile(other.icfile.load())
+        , u(other.u)
+        , v(other.v)
+    {
+    }
+    const UdimInfo& operator=(const UdimInfo& other)
+    {
+        filename = other.filename;
+        icfile   = other.icfile.load();
+        u        = other.u;
+        v        = other.v;
+        return *this;
+    }
+};
+
+}  // namespace pvt
+
+
+
 /// Unique in-memory record for each image file on disk.  Note that
 /// this class is not in and of itself thread-safe.  It's critical that
 /// any calling routine use a mutex any time a ImageCacheFile's methods are
@@ -126,7 +157,11 @@ struct ImageCacheStatistics {
 /// However, a few of them require passing in a pointer to the
 /// thread-specific IC data including microcache and statistics.
 ///
-class OIIO_API ImageCacheFile : public RefCnt {
+class OIIO_API ImageCacheFile final : public RefCnt {
+    using TexFormat = pvt::TexFormat;
+    using EnvLayout = pvt::EnvLayout;
+    using UdimInfo  = pvt::UdimInfo;
+
 public:
     ImageCacheFile(ImageCacheImpl& imagecache,
                    ImageCachePerThreadInfo* thread_info, ustring filename,
@@ -139,20 +174,21 @@ public:
     int subimages() const { return (int)m_subimages.size(); }
     int miplevels(int subimage) const
     {
-        return (int)m_subimages[subimage].levels.size();
+        return subimageinfo(subimage).miplevels();
     }
-    const ImageSpec& spec(int subimage, int miplevel) const
+
+    void get_cache_dimensions(int subimage, int miplevel, ImageSpec& spec) const
     {
-        return levelinfo(subimage, miplevel).spec;
+        subimageinfo(subimage).get_cache_dimensions(miplevel, spec);
     }
-    ImageSpec& spec(int subimage, int miplevel)
+
+    ImageSpec& spec(int subimage) { return subimageinfo(subimage).spec(); }
+
+    const ImageSpec& spec(int subimage) const
     {
-        return levelinfo(subimage, miplevel).spec;
+        return subimageinfo(subimage).spec();
     }
-    const ImageSpec& nativespec(int subimage, int miplevel) const
-    {
-        return levelinfo(subimage, miplevel).nativespec;
-    }
+
     ustring filename(void) const { return m_filename; }
     ustring fileformat(void) const { return m_fileformat; }
     TexFormat textureformat() const { return m_texformat; }
@@ -168,9 +204,8 @@ public:
 
     /// Load new data tile
     ///
-    bool read_tile(ImageCachePerThreadInfo* thread_info, int subimage,
-                   int miplevel, int x, int y, int z, int chbegin, int chend,
-                   TypeDesc format, void* data);
+    bool read_tile(ImageCachePerThreadInfo* thread_info, const TileID& id,
+                   void* data);
 
     /// Mark the file as recently used.
     ///
@@ -195,7 +230,7 @@ public:
     }
     bool mipused(void) const { return m_mipused; }
     bool sample_border(void) const { return m_sample_border; }
-    bool is_udim(void) const { return m_is_udim; }
+    bool is_udim(void) const { return m_udim_nutiles != 0; }
     const std::vector<size_t>& mipreadcount(void) const
     {
         return m_mipreadcount;
@@ -227,20 +262,84 @@ public:
     // success, false on failure.
     bool get_average_color(float* avg, int subimage, int chbegin, int chend);
 
+    /// ImageDims is a minified ImageSpec that only store the fields
+    /// that can change per mip map level.
+    /// It is used as standalone container or can be used as a view
+    /// over the same fields of ImageSpec via the ImageDims::convert() function.
+    struct ImageDims {
+        int x;            ///< origin (upper left corner) of pixel data
+        int y;            ///< origin (upper left corner) of pixel data
+        int z;            ///< origin (upper left corner) of pixel data
+        int width;        ///< width of the pixel data window
+        int height;       ///< height of the pixel data window
+        int depth;        ///< depth of pixel data, >1 indicates a "volume"
+        int full_x;       ///< origin of the full (display) window
+        int full_y;       ///< origin of the full (display) window
+        int full_z;       ///< origin of the full (display) window
+        int full_width;   ///< width of the full (display) window
+        int full_height;  ///< height of the full (display) window
+        int full_depth;   ///< depth of the full (display) window
+        int tile_width;   ///< tile width (0 for a non-tiled image)
+        int tile_height;  ///< tile height (0 for a non-tiled image)
+        int tile_depth;   ///< tile depth (0 for a non-tiled image,
+                          ///<             1 for a non-volume image)
+        int nchannels;    ///< number of image channels, e.g., 4 for RGBA
+
+        static const ImageDims& convert(const ImageSpec& s)
+        {
+            return *((ImageDims*)&s.x);
+        }
+
+        static ImageDims& convert(ImageSpec& s) { return *((ImageDims*)&s.x); }
+    };
+
+    /// Sanity checks for ImageSpec <-> ImageDims structures alignment.
+    OIIO_STATIC_ASSERT(alignof(ImageSpec) >= alignof(ImageDims));
+    OIIO_STATIC_ASSERT(sizeof(ImageDims) == offsetof(ImageSpec, format));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, x) == offsetof(ImageSpec, x));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, y) == offsetof(ImageSpec, y));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, z) == offsetof(ImageSpec, z));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, width)
+                       == offsetof(ImageSpec, width));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, height)
+                       == offsetof(ImageSpec, height));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, depth)
+                       == offsetof(ImageSpec, depth));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_x)
+                       == offsetof(ImageSpec, full_x));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_y)
+                       == offsetof(ImageSpec, full_y));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_z)
+                       == offsetof(ImageSpec, full_z));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_width)
+                       == offsetof(ImageSpec, full_width));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_height)
+                       == offsetof(ImageSpec, full_height));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, full_depth)
+                       == offsetof(ImageSpec, full_depth));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, tile_width)
+                       == offsetof(ImageSpec, tile_width));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, tile_height)
+                       == offsetof(ImageSpec, tile_height));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, tile_depth)
+                       == offsetof(ImageSpec, tile_depth));
+    OIIO_STATIC_ASSERT(offsetof(ImageDims, nchannels)
+                       == offsetof(ImageSpec, nchannels));
+
     /// Info for each MIP level that isn't in the ImageSpec, or that we
     /// precompute.
     struct LevelInfo {
-        ImageSpec spec;         ///< ImageSpec for the mip level
-        ImageSpec nativespec;   ///< Native ImageSpec for the mip level
-        bool full_pixel_range;  ///< pixel data window matches image window
-        bool onetile;           ///< Whole level fits on one tile
-        mutable bool polecolorcomputed;        ///< Pole color was computed
-        mutable std::vector<float> polecolor;  ///< Pole colors
-        int nxtiles, nytiles, nztiles;  ///< Number of tiles in each dimension
+        ImageDims* m_dims;                   ///< Level dimensions
+        std::unique_ptr<float[]> polecolor;  ///< Pole colors
         atomic_ll* tiles_read;  ///< Bitfield for tiles read at least once
-        LevelInfo(const ImageSpec& spec,
-                  const ImageSpec& nativespec);  ///< Initialize based on spec
-        LevelInfo(const LevelInfo& src);         // needed for vector<LevelInfo>
+        int nxtiles, nytiles, nztiles;  ///< Number of tiles in each dimension
+        uint16_t nchannels;             ///< Number of channels in the image
+        bool full_pixel_range : 1;   ///< pixel data window matches image window
+        bool onetile : 1;            ///< Whole level fits on one tile
+        bool polecolorcomputed : 1;  ///< Pole color was computed
+
+        LevelInfo(ImageSpec* spec, ImageDims* dims = nullptr);
+        LevelInfo(const LevelInfo& src);  // needed for vector<LevelInfo>
         ~LevelInfo() { delete[] tiles_read; }
     };
 
@@ -254,51 +353,95 @@ public:
         bool untiled             = false;  ///< Not tiled
         bool unmipped            = false;  ///< Not really MIP-mapped
         bool volume              = false;  ///< It's a volume image
-        bool full_pixel_range
-            = false;  ///< pixel data window matches image window
-        bool is_constant_image = false;    ///< Is the image a constant color?
-        bool has_average_color = false;    ///< We have an average color
-        std::vector<float> average_color;  ///< Average color
+        bool autotiled           = false;  ///< We are autotiling this image
+        bool full_pixel_range    = false;  ///< data window matches image window
+        bool is_constant_image   = false;  ///< Is the image a constant color?
+        bool has_average_color   = false;  ///< We have an average color
         spin_mutex average_color_mutex;    ///< protect average_color
+        std::vector<float> average_color;  ///< Average color
         std::unique_ptr<Imath::M44f> Mlocal;  ///< shadows/volumes: world-to-local
         // The scale/offset accounts for crops or overscans, converting
         // 0-1 texture space relative to the "display/full window" into
         // 0-1 relative to the "pixel window".
         float sscale = 1.0f, soffset = 0.0f;
         float tscale = 1.0f, toffset = 0.0f;
-        int min_mip_level = 0;  // Start with this MIP
+        int n_mip_levels  = 0;         // Number of MIP levels
+        int min_mip_level = 0;         // Start with this MIP
+        std::unique_ptr<int[]> minwh;  // min(width,height) for each MIP level
         ustring subimagename;
+        ImageSpec* m_spec;
 
         SubimageInfo() {}
-        void init(ImageCacheFile& icfile, const ImageSpec& spec,
-                  bool forcefloat);
-        ImageSpec& spec(int m) { return levels[m].spec; }
-        const ImageSpec& spec(int m) const { return levels[m].spec; }
-        const ImageSpec& nativespec(int m) const
-        {
-            return levels[m].nativespec;
-        }
+        void init(ImageCacheFile& icfile, ImageSpec* spec, bool forcefloat);
         int miplevels() const { return (int)levels.size(); }
+
+        void get_cache_dimensions(int m, ImageSpec& s) const
+        {
+            const ImageDims& dims = leveldims(m);
+            ImageDims& output     = ImageDims::convert(s);
+            output                = dims;
+        }
+
+        ImageSpec& spec()
+        {
+            OIIO_DASSERT(m_spec);
+            return *m_spec;
+        }
+        const ImageSpec& spec() const
+        {
+            OIIO_DASSERT(m_spec);
+            return *m_spec;
+        }
+
+        const LevelInfo& levelinfo(int miplevel) const
+        {
+            OIIO_DASSERT(miplevels() > miplevel);
+            return levels[miplevel];
+        }
+
+        LevelInfo& levelinfo(int miplevel)
+        {
+            OIIO_DASSERT(miplevels() > miplevel);
+            return levels[miplevel];
+        }
+
+        const ImageDims& leveldims(int miplevel) const
+        {
+            const LevelInfo& lvl = levelinfo(miplevel);
+            return lvl.m_dims ? *lvl.m_dims : ImageDims::convert(spec());
+        }
+
+        //! The following methods are similar to the ones from ImageSpec.
+        //! Underlying evaluation is from either the subimage spec
+        //! or the level specific dimensions if they exist.
+        imagesize_t get_tile_pixels(int m) const;
+        size_t get_pixel_bytes() const;
+        imagesize_t get_tile_bytes(int m) const;
+        imagesize_t get_scanline_bytes(int m) const;
+        imagesize_t get_image_pixels(int m) const;
+        imagesize_t get_image_bytes(int m) const;
     };
 
     const SubimageInfo& subimageinfo(int subimage) const
     {
+        OIIO_DASSERT((int)m_subimages.size() > subimage);
         return m_subimages[subimage];
     }
 
-    SubimageInfo& subimageinfo(int subimage) { return m_subimages[subimage]; }
+    SubimageInfo& subimageinfo(int subimage)
+    {
+        OIIO_DASSERT((int)m_subimages.size() > subimage);
+        return m_subimages[subimage];
+    }
 
     const LevelInfo& levelinfo(int subimage, int miplevel) const
     {
-        OIIO_DASSERT((int)m_subimages.size() > subimage);
-        OIIO_DASSERT((int)m_subimages[subimage].levels.size() > miplevel);
-        return m_subimages[subimage].levels[miplevel];
+        return subimageinfo(subimage).levelinfo(miplevel);
     }
+
     LevelInfo& levelinfo(int subimage, int miplevel)
     {
-        OIIO_DASSERT((int)m_subimages.size() > subimage);
-        OIIO_DASSERT((int)m_subimages[subimage].levels.size() > miplevel);
-        return m_subimages[subimage].levels[miplevel];
+        return subimageinfo(subimage).levelinfo(miplevel);
     }
 
     /// Do we currently have a valid spec?
@@ -314,6 +457,8 @@ public:
     {
         m_validspec = false;
         m_subimages.clear();
+        m_pool_specs.clear();
+        m_pool_dims.clear();
     }
 
     /// Should we print an error message? Keeps track of whether the
@@ -331,26 +476,45 @@ public:
     /// Return the error message that explains why the file is broken.
     string_view broken_error_message() const { return m_broken_message; }
 
+    // Return the regex wildcard matching pattern for a udim spec.
+    static std::string udim_to_wildcard(string_view udimpattern);
+
+    size_t heapsize() const;
+
 private:
     ustring m_filename_original;   ///< original filename before search path
     ustring m_filename;            ///< Filename
     bool m_used;                   ///< Recently used (in the LRU sense)
     bool m_broken;                 ///< has errors; can't be used properly
+    bool m_allow_release = true;   ///< Allow the file to release()?
     std::string m_broken_message;  ///< Error message for why it's broken
+#if __cpp_lib_atomic_shared_ptr >= 201711L /* C++20 has atomic<shared_pr> */
+    // Open ImageInput, NULL if closed
+    std::atomic<std::shared_ptr<ImageInput>> m_input;
+#else
     std::shared_ptr<ImageInput> m_input;  ///< Open ImageInput, NULL if closed
-        // Note that m_input, the shared pointer itself, is NOT safe to
-        // access directly. ALWAYS retrieve its value with get_imageinput
-        // (it's thread-safe to use that result) and set its value with
-        // get_imageinput -- those are guaranteed thread-safe.
+    // Note that m_input, the shared pointer itself, is NOT safe to
+    // access directly. ALWAYS retrieve its value with get_imageinput
+    // (it's thread-safe to use that result) and set its value with
+    // set_imageinput -- those are guaranteed thread-safe.
+#endif
     std::vector<SubimageInfo> m_subimages;  ///< Info on each subimage
-    TexFormat m_texformat;                  ///< Which texture format
-    TextureOpt::Wrap m_swrap;               ///< Default wrap modes
-    TextureOpt::Wrap m_twrap;               ///< Default wrap modes
-    TextureOpt::Wrap m_rwrap;               ///< Default wrap modes
-    EnvLayout m_envlayout;                  ///< env map: which layout?
+    std::vector<std::unique_ptr<ImageSpec>> m_pool_specs;  ///< Pool of ImageSpec
+    std::vector<std::unique_ptr<ImageDims>> m_pool_dims;  ///< Pool of ImageDims
+    static constexpr bool enable_specs_reuse
+        = true;  ///< Indicates to share ImageSpec across subimages
+    static constexpr bool enable_dims_reuse
+        = true;  ///< Indicates to share ImageDims across subimages and miplevels
+
+    TexFormat m_texformat;        ///< Which texture format
+    TextureOpt::Wrap m_swrap;     ///< Default wrap modes
+    TextureOpt::Wrap m_twrap;     ///< Default wrap modes
+    TextureOpt::Wrap m_rwrap;     ///< Default wrap modes
+    EnvLayout m_envlayout;        ///< env map: which layout?
     bool m_y_up;                  ///< latlong: is y "up"? (else z is up)
     bool m_sample_border;         ///< are edge samples exactly on the border?
-    bool m_is_udim;               ///< Is tiled/UDIM?
+    short m_udim_nutiles;         ///< Number of u tiles (0 if not a udim)
+    short m_udim_nvtiles;         ///< Number of v tiles (0 if not a udim)
     ustring m_fileformat;         ///< File format name
     size_t m_tilesread;           ///< Tiles read from this file
     imagesize_t m_bytesread;      ///< Bytes read from this file
@@ -364,20 +528,21 @@ private:
     mutable int m_errors_issued;         ///< Errors issued for this file
     std::vector<size_t> m_mipreadcount;  ///< Tile reads per mip level
     ImageCacheImpl& m_imagecache;        ///< Back pointer for ImageCache
-    mutable recursive_mutex m_input_mutex;  ///< Mutex protecting the ImageInput
-    std::time_t m_mod_time;                 ///< Time file was last updated
+    mutable std::recursive_timed_mutex
+        m_input_mutex;              ///< Mutex protecting the ImageInput
+    std::time_t m_mod_time;         ///< Time file was last updated
     ustring m_fingerprint;          ///< Optional cryptographic fingerprint
     ImageCacheFile* m_duplicate;    ///< Is this a duplicate?
     imagesize_t m_total_imagesize;  ///< Total size, uncompressed
     imagesize_t m_total_imagesize_ondisk;  ///< Total size, compressed on disk
     ImageInput::Creator m_inputcreator;    ///< Custom ImageInput-creator
     std::unique_ptr<ImageSpec> m_configspec;  // Optional configuration hints
-    UdimLookupMap m_udim_lookup;              ///< Used for decoding udim tiles
-                                              // protected by mutex elsewhere!
+    std::vector<UdimInfo> m_udim_lookup;      ///< Used for decoding udim tiles
+                                              /// protected by mutex elsewhere!
 
-    /// Thread-safe retrieve a shared pointer to the ImageInput. The one
-    /// returned is safe to use as long as the caller is holding the
-    /// shared_ptr.
+    // Thread-safe retrieve a shared pointer to the ImageInput (which may
+    // not currently be open). The one returned is safe to use as long as
+    // the caller is holding the shared_ptr.
     std::shared_ptr<ImageInput>
     get_imageinput(ImageCachePerThreadInfo* thread_info);
 
@@ -403,21 +568,38 @@ private:
     /// Preconditions: the ImageInput is already opened, and we already did
     /// a seek_subimage to the right subimage and MIP level.
     bool read_untiled(ImageCachePerThreadInfo* thread_info, ImageInput* inp,
-                      int subimage, int miplevel, int x, int y, int z,
-                      int chbegin, int chend, TypeDesc format, void* data);
+                      const TileID& id, void* data);
 
     /// Load the requested tile, from a file that's not really MIPmapped.
     /// Preconditions: the ImageInput is already opened, and we already did
     /// a seek_subimage to the right subimage.
-    bool read_unmipped(ImageCachePerThreadInfo* thread_info, int subimage,
-                       int miplevel, int x, int y, int z, int chbegin,
-                       int chend, TypeDesc format, void* data);
+    bool read_unmipped(ImageCachePerThreadInfo* thread_info, const TileID& id,
+                       void* data);
+
+    /// helpers for ImageCacheFile::open(...):
+    /// search for a matching ImageSpec within the existing subimages
+    ImageSpec* find_spec(int subimage, const ImageSpec& spec);
+    /// returns a pointer to an existing or a newly allocated ImageSpec that matches `spec`
+    ImageSpec* find_or_create_spec(int subimage, const ImageSpec& spec);
+    /// search for a similar ImageDims within the existing subimages at the specified miplevel
+    ImageDims* find_dims(int subimage, int miplevel, const ImageDims& spec);
+    /// returns a pointer to an existing or a newly allocated ImageDims that matches the dimensions from `spec`
+    ImageDims* find_or_create_dims(int subimage, int miplevel,
+                                   const ImageSpec& spec);
+    /// read and init the texture format of this ImageCacheFile from the given ImageSpec
+    /// returns a pointer in case the texture dimensions need to be sanitized
+    /// FIXME -- this should really be per-subimage
+    bool init_texture_format(const ImageSpec& spec);
 
     // Initialize a bunch of fields based on the ImageSpec.
     // FIXME -- this is actually deeply flawed, many of these things only
     // make sense if they are per subimage, not one value for the whole
     // file. But it will require a bigger refactor to fix that.
     void init_from_spec();
+
+    // Helper for ctr: evaluate udim information, including setting
+    // m_udim_tiles.
+    void udim_setup();
 
     friend class ImageCacheImpl;
     friend class TextureSystemImpl;
@@ -432,11 +614,11 @@ typedef intrusive_ptr<ImageCacheFile> ImageCacheFileRef;
 
 
 /// Map file names to file references
-typedef unordered_map_concurrent<
-    ustring, ImageCacheFileRef, ustringHash, std::equal_to<ustring>,
-    FILE_CACHE_SHARDS, tsl::robin_map<ustring, ImageCacheFileRef, ustringHash>>
+typedef unordered_map_concurrent<ustring, ImageCacheFileRef, std::hash<ustring>,
+                                 std::equal_to<ustring>, FILE_CACHE_SHARDS,
+                                 tsl::robin_map<ustring, ImageCacheFileRef>>
     FilenameMap;
-typedef tsl::robin_map<ustring, ImageCacheFileRef, ustringHash> FingerprintMap;
+typedef tsl::robin_map<ustring, ImageCacheFileRef> FingerprintMap;
 
 
 
@@ -444,16 +626,12 @@ typedef tsl::robin_map<ustring, ImageCacheFileRef, ustringHash> FingerprintMap;
 ///
 struct TileID {
     /// Default constructor
-    ///
-    TileID()
-        : m_file(nullptr)
-    {
-    }
+    TileID() = default;
 
     /// Initialize a TileID based on full elaboration of image file,
     /// subimage, and tile x,y,z indices.
     TileID(ImageCacheFile& file, int subimage, int miplevel, int x, int y,
-           int z = 0, int chbegin = 0, int chend = -1)
+           int z, int chbegin, int chend, int colortransformid = 0)
         : m_x(x)
         , m_y(y)
         , m_z(z)
@@ -461,16 +639,17 @@ struct TileID {
         , m_miplevel(miplevel)
         , m_chbegin(chbegin)
         , m_chend(chend)
+        , m_colortransformid(colortransformid)
         , m_file(&file)
     {
-        int nc = file.spec(subimage, miplevel).nchannels;
-        if (chend < chbegin || chend > nc)
+        if (chend < chbegin) {
+            int nc  = file.spec(subimage).nchannels;
             m_chend = nc;
+        }
     }
 
-    /// Destructor is trivial, because we don't hold any resources
-    /// of our own.  This is by design.
-    ~TileID() {}
+    /// Trivial destructor.
+    ~TileID() = default;
 
     ImageCacheFile& file(void) const { return *m_file; }
     ImageCacheFile* file_ptr(void) const { return m_file; }
@@ -482,6 +661,7 @@ struct TileID {
     int chbegin() const { return m_chbegin; }
     int chend() const { return m_chend; }
     int nchannels() const { return m_chend - m_chbegin; }
+    int colortransformid() const { return m_colortransformid; }
 
     void x(int v) { m_x = v; }
     void y(int v) { m_y = v; }
@@ -510,7 +690,8 @@ struct TileID {
         return (a.m_x == b.m_x && a.m_y == b.m_y && a.m_z == b.m_z
                 && a.m_subimage == b.m_subimage && a.m_miplevel == b.m_miplevel
                 && (a.m_file == b.m_file) && a.m_chbegin == b.m_chbegin
-                && a.m_chend == b.m_chend);
+                && a.m_chend == b.m_chend
+                && a.m_colortransformid == b.m_colortransformid);
     }
 
     /// Do the two ID's refer to the same tile?
@@ -521,12 +702,19 @@ struct TileID {
     /// Digest the TileID into a size_t to use as a hash key.
     size_t hash() const
     {
-        const uint64_t a = (uint64_t(m_x) << 32) + uint64_t(m_y);
-        const uint64_t b = (uint64_t(m_z) << 32) + uint64_t(m_subimage);
-        const uint64_t c = (uint64_t(m_miplevel) << 32)
-                           + (uint64_t(m_chbegin) << 16) + uint64_t(m_chend);
-        const uint64_t d = m_file->filename().hash();
-        return fasthash::fasthash64({ a, b, c, d });
+        static constexpr size_t member_size
+            = sizeof(m_x) + sizeof(m_y) + sizeof(m_z) + sizeof(m_subimage)
+              + sizeof(m_miplevel) + sizeof(m_chbegin) + sizeof(m_chend)
+              + sizeof(m_colortransformid) + sizeof(m_padding) + sizeof(m_file);
+        static_assert(
+            sizeof(*this) == member_size,
+            "All TileID members must be accounted for so we can hash the entire class.");
+#ifdef __LP64__
+        static_assert(
+            sizeof(*this) % sizeof(uint64_t) == 0,
+            "FastHash uses the fewest instructions when data size is a multiple of 8 bytes.");
+#endif
+        return fasthash::fasthash64(this, sizeof(*this));
     }
 
     /// Functor that hashes a TileID
@@ -538,25 +726,27 @@ struct TileID {
     {
         return (o << "{xyz=" << id.m_x << ',' << id.m_y << ',' << id.m_z
                   << ", sub=" << id.m_subimage << ", mip=" << id.m_miplevel
-                  << ", chans=[" << id.chbegin() << "," << id.chend() << ")"
-                  << ' '
+                  << ", chans=[" << id.chbegin() << "," << id.chend()
+                  << ", cs=" << id.colortransformid() << ") "
                   << (id.m_file ? ustring("nofile") : id.m_file->filename())
                   << '}');
     }
 
 private:
-    int m_x, m_y, m_z;         ///< x,y,z tile index within the subimage
-    int m_subimage;            ///< subimage
-    int m_miplevel;            ///< MIP-map level
-    short m_chbegin, m_chend;  ///< Channel range
-    ImageCacheFile* m_file;    ///< Which ImageCacheFile we refer to
+    int m_x = 0, m_y = 0, m_z = 0;     ///< x,y,z tile index within the subimage
+    int m_subimage  = 0;               ///< subimage
+    int m_miplevel  = 0;               ///< MIP-map level
+    short m_chbegin = 0, m_chend = 0;  ///< Channel range
+    int m_colortransformid = 0;        ///< Colorspace id (0 == default)
+    int m_padding          = 0;        ///< Unused
+    ImageCacheFile* m_file = nullptr;  ///< Which ImageCacheFile we refer to
 };
 
 
 
 /// Record for a single image tile.
 ///
-class ImageCacheTile : public RefCnt {
+class ImageCacheTile final : public RefCnt {
 public:
     /// Construct a new tile, pixels will be read when calling read()
     ImageCacheTile(const TileID& id);
@@ -569,9 +759,9 @@ public:
 
     ~ImageCacheTile();
 
-    /// Actually read the pixels.  The caller had better be the thread
-    /// that constructed the tile.
-    void read(ImageCachePerThreadInfo* thread_info);
+    /// Actually read the pixels.  The caller had better be the thread that
+    /// constructed the tile.  Return true for success, false for failure.
+    OIIO_NODISCARD bool read(ImageCachePerThreadInfo* thread_info);
 
     /// Return pointer to the raw pixel data
     const void* data(void) const { return &m_pixels[0]; }
@@ -645,18 +835,30 @@ public:
     int channelsize() const { return m_channelsize; }
     int pixelsize() const { return m_pixelsize; }
 
+    // 1D index of the 2D tile coordinate. 64 bit safe.
+    imagesize_t pixel_index(int tile_s, int tile_t) const
+    {
+        return imagesize_t(tile_t) * m_tile_width + tile_s;
+    }
+
+    // Offset in bytes into the tile memory of the given 2D tile pixel
+    // coordinates.  64 bit safe.
+    imagesize_t pixel_offset(int tile_s, int tile_t) const
+    {
+        return m_pixelsize * pixel_index(tile_s, tile_t);
+    }
+
 private:
     TileID m_id;                       ///< ID of this tile
     std::unique_ptr<char[]> m_pixels;  ///< The pixel data
     size_t m_pixels_size { 0 };        ///< How much m_pixels has allocated
     int m_channelsize { 0 };           ///< How big is each channel (bytes)
     int m_pixelsize { 0 };             ///< How big is each pixel (bytes)
+    int m_tile_width { 0 };            ///< Tile width
     bool m_valid { false };            ///< Valid pixels
     bool m_nofree { false };  ///< We do NOT own the pixels, do not free!
-    volatile bool m_pixels_ready {
-        false
-    };                        ///< The pixels have been read from disk
-    atomic_int m_used { 1 };  ///< Used recently
+    volatile bool m_pixels_ready { false };  // Pixels have been read from disk
+    atomic_int m_used { 1 };                 ///< Used recently
 };
 
 
@@ -675,6 +877,7 @@ typedef unordered_map_concurrent<
     TileCache;
 
 
+
 /// A very small amount of per-thread data that saves us from locking
 /// the mutex quite as often.  We store things here used by both
 /// ImageCache and TextureSystem, so they don't each need a costly
@@ -686,15 +889,13 @@ public:
     // Fall back to the shared map only when not found locally.
     // This is safe because no ImageCacheFile is ever truly deleted from
     // the shared map, so this map isn't the owner.
-    using ThreadFilenameMap
-        = tsl::robin_map<ustring, ImageCacheFile*, ustringHash>;
+    using ThreadFilenameMap = tsl::robin_map<ustring, ImageCacheFile*>;
     ThreadFilenameMap m_thread_files;
 
     // We have a two-tile "microcache", storing the last two tiles needed.
     ImageCacheTileRef tile, lasttile;
     atomic_int purge;  // If set, tile ptrs need purging!
     ImageCacheStatistics m_stats;
-    bool shared = false;  // Pointed to by the IC and thread_specific_ptr
 
     ImageCachePerThreadInfo()
     {
@@ -719,6 +920,13 @@ public:
         auto f = m_thread_files.find(n);
         return f == m_thread_files.end() ? nullptr : f->second;
     }
+
+    size_t heapsize() const
+    {
+        /// TODO: this should take into account the two last tiles, if their refcount is zero.
+        constexpr size_t sizeofPair = sizeof(ustring) + sizeof(ImageCacheFile*);
+        return m_thread_files.size() * sizeofPair;
+    }
 };
 
 
@@ -728,56 +936,65 @@ public:
 /// Some of the methods require a pointer to the thread-specific IC data
 /// including microcache and statistics.
 ///
-class ImageCacheImpl : public ImageCache {
+class ImageCacheImpl {
 public:
-    ImageCacheImpl();
-    virtual ~ImageCacheImpl();
+    using Perthread   = ImageCachePerThreadInfo;
+    using ImageHandle = ImageCacheFile;
+    using Tile        = ImageCacheTile;
+    friend class TextureSystem;
+    friend class TextureSystemImpl;
 
-    virtual bool attribute(string_view name, TypeDesc type, const void* val);
-    virtual bool attribute(string_view name, int val)
+    ImageCacheImpl();
+    ~ImageCacheImpl();
+
+    bool attribute(string_view name, TypeDesc type, const void* val);
+    bool attribute(string_view name, int val)
     {
-        return attribute(name, TypeDesc::INT, &val);
+        return attribute(name, TypeInt, &val);
     }
-    virtual bool attribute(string_view name, float val)
+    bool attribute(string_view name, float val)
     {
-        return attribute(name, TypeDesc::FLOAT, &val);
+        return attribute(name, TypeFloat, &val);
     }
-    virtual bool attribute(string_view name, double val)
+    bool attribute(string_view name, double val)
     {
         float f = (float)val;
-        return attribute(name, TypeDesc::FLOAT, &f);
+        return attribute(name, TypeFloat, &f);
     }
-    virtual bool attribute(string_view name, string_view val)
+    bool attribute(string_view name, string_view val)
     {
-        const char* s = val.c_str();
-        return attribute(name, TypeDesc::STRING, &s);
+        std::string valstr(val);
+        const char* s = valstr.c_str();
+        return attribute(name, TypeString, &s);
     }
 
-    virtual bool getattribute(string_view name, TypeDesc type, void* val) const;
-    virtual bool getattribute(string_view name, int& val) const
+    TypeDesc getattributetype(string_view name) const;
+
+    bool getattribute(string_view name, TypeDesc type, void* val) const;
+    bool getattribute(string_view name, int& val) const
     {
-        return getattribute(name, TypeDesc::INT, &val);
+        return getattribute(name, TypeInt, &val);
     }
-    virtual bool getattribute(string_view name, float& val) const
+    bool getattribute(string_view name, float& val) const
     {
-        return getattribute(name, TypeDesc::FLOAT, &val);
+        return getattribute(name, TypeFloat, &val);
     }
-    virtual bool getattribute(string_view name, double& val) const
+    bool getattribute(string_view name, double& val) const
     {
         float f;
-        bool ok = getattribute(name, TypeDesc::FLOAT, &f);
+        bool ok = getattribute(name, TypeFloat, &f);
         if (ok)
             val = f;
         return ok;
     }
-    virtual bool getattribute(string_view name, char** val) const
+    bool getattribute(string_view name, char** val) const
     {
-        return getattribute(name, TypeDesc::STRING, val);
+        return getattribute(name, TypeString, val);
     }
-    virtual bool getattribute(string_view name, std::string& val) const
+    bool getattribute(string_view name, std::string& val) const
     {
         ustring s;
-        bool ok = getattribute(name, TypeDesc::STRING, &s);
+        bool ok = getattribute(name, TypeString, &s);
         if (ok)
             val = s.string();
         return ok;
@@ -801,73 +1018,90 @@ public:
     void get_commontoworld(Imath::M44f& result) const { result = m_Mc2w; }
     int max_errors_per_file() const { return m_max_errors_per_file; }
 
-    virtual std::string resolve_filename(const std::string& filename) const;
+    std::string resolve_filename(const std::string& filename) const;
 
     // Set m_max_open_files, with logic to try to clamp reasonably.
     void set_max_open_files(int m);
 
     /// Get information about the given image.
     ///
-    virtual bool get_image_info(ustring filename, int subimage, int miplevel,
-                                ustring dataname, TypeDesc datatype,
-                                void* data);
-    virtual bool get_image_info(ImageCacheFile* file,
-                                ImageCachePerThreadInfo* thread_info,
-                                int subimage, int miplevel, ustring dataname,
-                                TypeDesc datatype, void* data);
+    bool get_image_info(ustring filename, int subimage, int miplevel,
+                        ustring dataname, TypeDesc datatype, void* data);
+    bool get_image_info(ImageCacheFile* file,
+                        ImageCachePerThreadInfo* thread_info, int subimage,
+                        int miplevel, ustring dataname, TypeDesc datatype,
+                        void* data);
 
     /// Get the ImageSpec associated with the named image.  If the file
     /// is found and is an image format that can be read, store a copy
     /// of its specification in spec and return true.  Return false if
     /// the file was not found or could not be opened as an image file
     /// by any available ImageIO plugin.
-    virtual bool get_imagespec(ustring filename, ImageSpec& spec,
-                               int subimage = 0, int miplevel = 0,
-                               bool native = false);
-    virtual bool get_imagespec(ImageCacheFile* file,
-                               ImageCachePerThreadInfo* thread_info,
-                               ImageSpec& spec, int subimage = 0,
-                               int miplevel = 0, bool native = false);
+    bool get_imagespec(ustring filename, ImageSpec& spec, int subimage = 0);
+    bool get_imagespec(ImageCacheFile* file,
+                       ImageCachePerThreadInfo* thread_info, ImageSpec& spec,
+                       int subimage = 0);
 
-    virtual const ImageSpec* imagespec(ustring filename, int subimage = 0,
-                                       int miplevel = 0, bool native = false);
-    virtual const ImageSpec*
-    imagespec(ImageCacheFile* file, ImageCachePerThreadInfo* thread_info = NULL,
-              int subimage = 0, int miplevel = 0, bool native = false);
+    const ImageSpec* imagespec(ustring filename, int subimage = 0);
+    const ImageSpec* imagespec(ImageCacheFile* file,
+                               ImageCachePerThreadInfo* thread_info = NULL,
+                               int subimage                         = 0);
+
+    bool get_cache_dimensions(ustring filename, ImageSpec& spec,
+                              int subimage = 0, int miplevel = 0);
+    bool get_cache_dimensions(ImageCacheFile* file,
+                              ImageCachePerThreadInfo* thread_info,
+                              ImageSpec& spec, int subimage = 0,
+                              int miplevel = 0);
+
+    ImageCacheFile* resolve_udim(ImageCacheFile* udimfile,
+                                 Perthread* thread_info, int utile, int vtile);
+    void inventory_udim(ImageCacheFile* udimfile, Perthread* thread_info,
+                        std::vector<ustring>& filenames, int& nutiles,
+                        int& nvtiles);
+
+    bool get_thumbnail(ustring filename, ImageBuf& thumbnail, int subimage = 0);
+    bool get_thumbnail(ImageHandle* file, Perthread* thread_info,
+                       ImageBuf& thumbnail, int subimage = 0);
 
     // Retrieve a rectangle of raw unfiltered pixels.
-    virtual bool get_pixels(ustring filename, int subimage, int miplevel,
-                            int xbegin, int xend, int ybegin, int yend,
-                            int zbegin, int zend, TypeDesc format,
-                            void* result);
-    virtual bool get_pixels(ImageCacheFile* file,
-                            ImageCachePerThreadInfo* thread_info, int subimage,
-                            int miplevel, int xbegin, int xend, int ybegin,
-                            int yend, int zbegin, int zend, TypeDesc format,
-                            void* result);
-    virtual bool get_pixels(ustring filename, int subimage, int miplevel,
-                            int xbegin, int xend, int ybegin, int yend,
-                            int zbegin, int zend, int chbegin, int chend,
-                            TypeDesc format, void* result,
-                            stride_t xstride  = AutoStride,
-                            stride_t ystride  = AutoStride,
-                            stride_t zstride  = AutoStride,
-                            int cache_chbegin = 0, int cache_chend = -1);
-    virtual bool
-    get_pixels(ImageCacheFile* file, ImageCachePerThreadInfo* thread_info,
-               int subimage, int miplevel, int xbegin, int xend, int ybegin,
-               int yend, int zbegin, int zend, int chbegin, int chend,
-               TypeDesc format, void* result, stride_t xstride = AutoStride,
-               stride_t ystride = AutoStride, stride_t zstride = AutoStride,
-               int cache_chbegin = 0, int cache_chend = -1);
+    bool get_pixels(ustring filename, int subimage, int miplevel,
+                    const ROI& roi, TypeDesc format,
+                    const image_span<std::byte>& result, int cache_chbegin = 0,
+                    int cache_chend = -1);
+    bool get_pixels(ImageHandle* file, Perthread* thread_info, int subimage,
+                    int miplevel, const ROI& roi, TypeDesc format,
+                    const image_span<std::byte>& result, int cache_chbegin = 0,
+                    int cache_chend = -1);
 
-    /// Find the ImageCacheFile record for the named image, or NULL if
-    /// no such file can be found.  This returns a plain old pointer,
-    /// which is ok because the file hash table has ref-counted pointers
-    /// and those won't be freed until the texture system is destroyed.
-    /// If header_only is true, we are finding the file only for the sake
-    /// of header information (e.g., called by get_image_info).
-    /// A call to verify_file() is still needed after find_file().
+    bool get_pixels(ustring filename, int subimage, int miplevel, int xbegin,
+                    int xend, int ybegin, int yend, int zbegin, int zend,
+                    TypeDesc format, void* result);
+    bool get_pixels(ImageCacheFile* file, ImageCachePerThreadInfo* thread_info,
+                    int subimage, int miplevel, int xbegin, int xend,
+                    int ybegin, int yend, int zbegin, int zend, TypeDesc format,
+                    void* result);
+    bool get_pixels(ustring filename, int subimage, int miplevel, int xbegin,
+                    int xend, int ybegin, int yend, int zbegin, int zend,
+                    int chbegin, int chend, TypeDesc format, void* result,
+                    stride_t xstride = AutoStride,
+                    stride_t ystride = AutoStride,
+                    stride_t zstride = AutoStride, int cache_chbegin = 0,
+                    int cache_chend = -1);
+    bool get_pixels(ImageCacheFile* file, ImageCachePerThreadInfo* thread_info,
+                    int subimage, int miplevel, int xbegin, int xend,
+                    int ybegin, int yend, int zbegin, int zend, int chbegin,
+                    int chend, TypeDesc format, void* result,
+                    stride_t xstride = AutoStride,
+                    stride_t ystride = AutoStride,
+                    stride_t zstride = AutoStride, int cache_chbegin = 0,
+                    int cache_chend = -1);
+
+    // Find the ImageCacheFile record for the named image, adding an entry
+    // if it is not already in the cache. This returns a plain old pointer,
+    // which is ok because the file hash table has ref-counted pointers and
+    // those won't be freed until the ImageCache is destroyed. A call to
+    // verify_file() is still needed after find_file().
     ImageCacheFile* find_file(ustring filename,
                               ImageCachePerThreadInfo* thread_info,
                               ImageInput::Creator creator = nullptr,
@@ -886,9 +1120,9 @@ public:
                                 ImageCachePerThreadInfo* thread_info,
                                 bool header_only = false);
 
-    virtual ImageCacheFile*
-    get_image_handle(ustring filename,
-                     ImageCachePerThreadInfo* thread_info = NULL)
+    ImageCacheFile* get_image_handle(ustring filename,
+                                     ImageCachePerThreadInfo* thread_info,
+                                     const TextureOpt* options)
     {
         if (!thread_info)
             thread_info = get_perthread_info();
@@ -896,9 +1130,11 @@ public:
         return verify_file(file, thread_info);
     }
 
-    virtual bool good(ImageCacheFile* handle)
+    bool good(ImageCacheFile* handle) { return handle && !handle->broken(); }
+
+    ustring filename_from_handle(ImageCacheFile* handle)
     {
-        return handle && !handle->broken();
+        return handle ? handle->filename() : ustring();
     }
 
     /// Is the tile specified by the TileID already in the cache?
@@ -911,8 +1147,8 @@ public:
 
     /// Add the tile to the cache.  This will also enforce cache memory
     /// limits.
-    void add_tile_to_cache(ImageCacheTileRef& tile,
-                           ImageCachePerThreadInfo* thread_info);
+    OIIO_NODISCARD bool add_tile_to_cache(ImageCacheTileRef& tile,
+                                          ImageCachePerThreadInfo* thread_info);
 
     /// Find the tile specified by id.  If found, return true and place
     /// the tile ref in thread_info->tile; if not found, return false.
@@ -946,40 +1182,44 @@ public:
         // N.B. find_tile_main_cache marks the tile as used
     }
 
-    virtual Tile* get_tile(ustring filename, int subimage, int miplevel, int x,
-                           int y, int z, int chbegin, int chend);
-    virtual Tile* get_tile(ImageHandle* file, Perthread* thread_info,
-                           int subimage, int miplevel, int x, int y, int z,
-                           int chbegin, int chend);
-    virtual void release_tile(Tile* tile) const;
-    virtual TypeDesc tile_format(const Tile* tile) const;
-    virtual ROI tile_roi(const Tile* tile) const;
-    virtual const void* tile_pixels(Tile* tile, TypeDesc& format) const;
-    virtual bool add_file(ustring filename, ImageInput::Creator creator,
-                          const ImageSpec* config, bool replace);
-    virtual bool add_tile(ustring filename, int subimage, int miplevel, int x,
-                          int y, int z, int chbegin, int chend, TypeDesc format,
-                          const void* buffer, stride_t xstride,
-                          stride_t ystride, stride_t zstride, bool copy);
+    Tile* get_tile(ustring filename, int subimage, int miplevel, int x, int y,
+                   int z, int chbegin, int chend);
+    Tile* get_tile(ImageHandle* file, Perthread* thread_info, int subimage,
+                   int miplevel, int x, int y, int z, int chbegin, int chend);
+    void release_tile(Tile* tile) const;
+    TypeDesc tile_format(const Tile* tile) const;
+    ROI tile_roi(const Tile* tile) const;
+    const void* tile_pixels(Tile* tile, TypeDesc& format) const;
+    bool add_file(ustring filename, ImageInput::Creator creator,
+                  const ImageSpec* config, bool replace);
+    bool add_tile(ustring filename, int subimage, int miplevel, int x, int y,
+                  int z, int chbegin, int chend, TypeDesc format,
+                  const void* buffer, stride_t xstride, stride_t ystride,
+                  stride_t zstride, bool copy);
+    bool add_tile(ustring filename, int subimage, int miplevel, int x, int y,
+                  int z, int chbegin, int chend, TypeDesc format,
+                  const image_span<const std::byte>& buffer, bool copy);
 
     /// Return the numerical subimage index for the given subimage name,
     /// as stored in the "oiio:subimagename" metadata.  Return -1 if no
     /// subimage matches its name.
     int subimage_from_name(ImageCacheFile* file, ustring subimagename);
 
-    virtual std::string geterror() const;
-    virtual std::string getstats(int level = 1) const;
-    virtual void reset_stats();
-    virtual void invalidate(ustring filename, bool force);
-    virtual void invalidate_all(bool force = false);
-    virtual void close(ustring filename);
-    virtual void close_all();
+    bool has_error() const;
+    std::string geterror(bool clear = true) const;
+    std::string getstats(int level = 1) const;
+    void reset_stats();
+    void invalidate(ustring filename, bool force);
+    void invalidate(ImageHandle* file, bool force);
+    void invalidate_all(bool force = false);
+    void close(ustring filename);
+    void close_all();
 
     /// Merge all the per-thread statistics into one set of stats.
     ///
     void mergestats(ImageCacheStatistics& merged) const;
 
-    void operator delete(void* todel) { ::delete ((char*)todel); }
+    // void operator delete(void* todel) { ::delete ((char*)todel); }
 
     /// Called when a new file is opened, so that the system can track
     /// the number of simultaneously-opened files.
@@ -990,7 +1230,7 @@ public:
     }
 
     /// Called when a file is closed, so that the system can track
-    /// the number of simultyaneously-opened files.
+    /// the number of simultaneously-opened files.
     void decr_open_files(void) { --m_stat_open_files_current; }
 
     /// Called when a new tile is created, to update all the stats.
@@ -1015,33 +1255,20 @@ public:
         OIIO_DASSERT(m_mem_used >= 0);
     }
 
-    /// Internal error reporting routine, with printf-like arguments.
+    /// Internal error reporting routine, with std::format-like arguments.
     template<typename... Args>
-    void errorf(const char* fmt, const Args&... args) const
+    void error(const char* fmt, const Args&... args) const
     {
-        append_error(Strutil::sprintf(fmt, args...));
+        append_error(Strutil::fmt::format(fmt, args...));
     }
     void error(const char* msg) const { append_error(msg); }
 
     /// Append a string to the current error message
-    void append_error(const std::string& message) const;
+    void append_error(string_view message) const;
 
-    virtual Perthread* get_perthread_info(Perthread* thread_info = NULL);
-    virtual Perthread* create_thread_info();
-    virtual void destroy_thread_info(Perthread* thread_info);
-
-    /// Called when the IC is destroyed.  We have a list of all the
-    /// perthread pointers -- go through and delete the ones for which we
-    /// hold the only remaining pointer.
-    void erase_perthread_info();
-
-    /// This is called when the thread terminates.  If p->m_imagecache
-    /// is non-NULL, there's still an imagecache alive that might want
-    /// the per-thread info (say, for statistics, though it's safe to
-    /// clear its tile microcache), so don't delete the perthread info
-    /// (it will be owned thereafter by the IC).  If there is no IC still
-    /// depending on it (signalled by m_imagecache == NULL), delete it.
-    static void cleanup_perthread_info(Perthread* thread_info);
+    Perthread* get_perthread_info(Perthread* thread_info = NULL);
+    Perthread* create_thread_info();
+    void destroy_thread_info(Perthread* thread_info);
 
     /// Ensure that the max_memory_bytes is at least newsize bytes.
     /// Override the previous value if necessary, with thread-safety.
@@ -1050,12 +1277,12 @@ public:
     /// Enforce the max number of open files.
     void check_max_files(ImageCachePerThreadInfo* thread_info);
 
-    // For virtual UDIM-like files, adjust s and t and return the concrete
-    // ImageCacheFile pointer for the tile it's on.
-    ImageCacheFile* resolve_udim(ImageCacheFile* file, Perthread* thread_info,
-                                 float& s, float& t);
-
     int max_mip_res() const noexcept { return m_max_mip_res; }
+
+    ustring colorspace() const noexcept { return m_colorspace; }
+
+    size_t heapsize() const;
+    size_t footprint(ImageCacheFootprint& output) const;
 
 private:
     void init();
@@ -1092,8 +1319,8 @@ private:
     /// Clear the fingerprint list, thread-safe.
     void clear_fingerprints();
 
-    thread_specific_ptr<ImageCachePerThreadInfo> m_perthread_info;
-    std::vector<ImageCachePerThreadInfo*> m_all_perthread_info;
+    uint64_t imagecache_id;
+    std::vector<std::unique_ptr<ImageCachePerThreadInfo>> m_all_perthread_info;
     static spin_mutex m_perthread_info_mutex;  ///< Thread safety for perthread
     int m_max_open_files;
     atomic_ll m_max_memory_bytes;
@@ -1110,11 +1337,14 @@ private:
     bool m_unassociatedalpha;  ///< Keep unassociated alpha files as they are?
     bool m_latlong_y_up_default;  ///< Is +y the default "up" for latlong?
     bool m_trust_file_extensions = false;  ///< Assume file extensions don't lie?
+    bool m_max_open_files_strict = false;  ///< Be strict about open files limit?
     int m_failure_retries;                 ///< Times to re-try disk failures
     int m_max_mip_res = 1 << 30;  ///< Don't use MIP levels higher than this
     Imath::M44f m_Mw2c;           ///< world-to-"common" matrix
     Imath::M44f m_Mc2w;           ///< common-to-world matrix
     ustring m_substitute_image;   ///< Substitute this image for all others
+    ustring m_colorspace;         ///< Working color space
+    ustring m_colorconfigname;    ///< Filename of color config to use
 
     mutable FilenameMap m_files;    ///< Map file names to ImageCacheFile's
     ustring m_file_sweep_name;      ///< Sweeper for "clock" paging algorithm
@@ -1123,17 +1353,15 @@ private:
     spin_mutex m_fingerprints_mutex;  ///< Protect m_fingerprints
     FingerprintMap m_fingerprints;    ///< Map fingerprints to files
 
-    TileCache m_tilecache;          ///< Our in-memory tile cache
+    /// FIXME: if unordered_map_concurrent had const iterators,
+    /// m_tilecache wouldn't need to be mutable
+    mutable TileCache m_tilecache;  ///< Our in-memory tile cache
     TileID m_tile_sweep_id;         ///< Sweeper for "clock" paging algorithm
     spin_mutex m_tile_sweep_mutex;  ///< Ensure only one in check_max_mem
 
     atomic_ll m_mem_used;       ///< Memory being used for tiles
     int m_statslevel;           ///< Statistics level
     int m_max_errors_per_file;  ///< Max errors to print for each file.
-
-    /// Saved error string, per-thread
-    ///
-    mutable thread_specific_ptr<std::string> m_errormessage;
 
     // For debugging -- keep track of who holds the tile and file mutex
 
@@ -1168,9 +1396,6 @@ private:
     }
 };
 
-
-
-}  // end namespace pvt
 
 OIIO_NAMESPACE_END
 

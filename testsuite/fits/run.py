@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+# Copyright Contributors to the OpenImageIO project.
+# SPDX-License-Identifier: Apache-2.0
+# https://github.com/AcademySoftwareFoundation/OpenImageIO
+
 # ../fits-image/pg93:
 # tst0001.fits to tst0014.fits
 imagedir = OIIO_TESTSUITE_IMAGEDIR + "/pg93"

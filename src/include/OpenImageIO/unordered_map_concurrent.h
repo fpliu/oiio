@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 #pragma once
@@ -333,6 +333,41 @@ public:
         return i;
     }
 
+    /// Search for key.  If found, return an iterator referring to the
+    /// existing element, otherwise, insert the value and return an iterator
+    /// to the newly added element.  If do_lock is true, lock the bin that
+    /// we're searching and return the iterator in a locked state; however,
+    /// if do_lock is false, assume that the caller already has the bin
+    /// locked, so do no locking and return an iterator that is unaware that
+    /// it holds a lock.
+    std::pair<iterator, bool> find_or_insert(const KEY& key, const VALUE& value,
+                                             bool do_lock = true)
+    {
+        size_t hash   = m_hash(key);
+        size_t b      = whichbin(hash);
+        bool inserted = false;
+        Bin& bin(m_bins[b]);
+        // We're returning an iterator no matter what, so prepare it
+        // partially now, before we are holding any lock.
+        iterator iret(this);
+        iret.m_bin    = (unsigned)b;
+        iret.m_locked = do_lock;
+        if (do_lock)
+            bin.lock();
+        iret.m_biniterator = find_with_hash(bin.map, key, hash);
+        if (iret.m_biniterator == bin.map.end()) {
+            // Not found in the map, insert it
+            auto result = bin.map.emplace(key, value);
+            if (result.second) {
+                // the insert was successful!
+                ++m_size;
+            }
+            iret.m_biniterator = result.first;
+            inserted           = true;
+        }
+        return { iret, inserted };
+    }
+
     /// Search for key. If found, return true and store the value. If not
     /// found, return false and do not alter value. If do_lock is true,
     /// read-lock the bin while we're searching, and release it before
@@ -356,9 +391,42 @@ public:
 
     /// Insert <key,value> into the hash map if it's not already there.
     /// Return true if added, false if it was already present.
+    /// If it was already present in the map, replace `value` with the
+    /// value stored in the map.
     /// If do_lock is true, lock the bin containing key while doing this
     /// operation; if do_lock is false, assume that the caller already
     /// has the bin locked, so do no locking or unlocking.
+    bool insert_retrieve(const KEY& key, VALUE& value, VALUE& mapvalue,
+                         bool do_lock = true)
+    {
+        size_t hash = m_hash(key);
+        size_t b    = whichbin(hash);
+        Bin& bin(m_bins[b]);
+        if (do_lock)
+            bin.lock();
+        auto result = bin.map.emplace(key, value);
+        if (result.second) {
+            // the insert was successful!
+            ++m_size;
+        } else {
+            // Replace caller's value with the one already in the table.
+            value = result.first->second;
+        }
+        if (do_lock)
+            bin.unlock();
+        return result.second;
+    }
+
+    /// Insert <key,value> into the hash map if it's not already there.
+    /// Return true if added, false if it was already present.
+    /// If do_lock is true, lock the bin containing key while doing this
+    /// operation; if do_lock is false, assume that the caller already
+    /// has the bin locked, so do no locking or unlocking.
+    ///
+    /// N.B.: This method returns a bool, whereas std::unordered_map::insert
+    /// returns a pair<iterator,bool>. If you want the more standard
+    /// functionalty, we call that find_or_insert(). Sorry for the mixup,
+    /// it's too late to rename it now to conform to the standard.
     bool insert(const KEY& key, const VALUE& value, bool do_lock = true)
     {
         size_t hash = m_hash(key);
@@ -368,7 +436,7 @@ public:
             bin.lock();
         auto result = bin.map.emplace(key, value);
         if (result.second) {
-            // the insert was succesful!
+            // the insert was successful!
             ++m_size;
         }
         if (do_lock)
@@ -387,9 +455,27 @@ public:
         Bin& bin(m_bins[b]);
         if (do_lock)
             bin.lock();
-        bin.map.erase(key, hash);
+        bin.map.erase(key);
+        --m_size;
         if (do_lock)
             bin.unlock();
+    }
+
+    /// Removes all items from the map.
+    void clear()
+    {
+        if (empty())
+            return;
+        for (size_t b = 0; b < BINS; b++) {
+            BinMap_t map;
+            Bin& bin(m_bins[b]);
+            bin.lock();
+            if (!bin.map.empty()) {
+                bin.map.swap(map);
+                m_size -= map.size();
+            }
+            bin.unlock();
+        }
     }
 
     /// Return true if the entire map is empty.
@@ -398,7 +484,7 @@ public:
     /// Return the total number of entries in the map.
     size_t size() { return size_t(m_size); }
 
-    /// Expliticly lock the bin that will contain the key (regardless of
+    /// Explicitly lock the bin that will contain the key (regardless of
     /// whether there is such an entry in the map), and return its bin
     /// number.
     size_t lock_bin(const KEY& key)
@@ -412,6 +498,10 @@ public:
     /// Explicitly unlock the specified bin (this assumes that the caller
     /// holds the lock).
     void unlock_bin(size_t bin) { m_bins[bin].unlock(); }
+
+    // Return a mask that is 1 for bits of the hash that are not used to
+    // determine the bin number.
+    static constexpr size_t nobin_mask() { return ~size_t(0) >> log2(BINS); }
 
 private:
     struct Bin {

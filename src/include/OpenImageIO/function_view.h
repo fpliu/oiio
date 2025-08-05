@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 // Portions of the code in this file is a derived work based on the
 // FunctionRef class in LLVM:
@@ -61,7 +61,7 @@ OIIO_NAMESPACE_BEGIN
 /// function_view.
 ///
 /// In contrast, a full std::function<> is an owning container for a
-/// callable object. It's more robust, especially with restpect to object
+/// callable object. It's more robust, especially with respect to object
 /// lifetimes, but the call overhead is quite high. So use a function_view
 /// when you can.
 ///

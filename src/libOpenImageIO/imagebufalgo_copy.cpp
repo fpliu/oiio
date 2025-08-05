@@ -1,16 +1,11 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
-
-/// \file
-/// Implementation of ImageBufAlgo algorithms that merely move pixels
-/// or channels between images without altering their values.
-
-
-#include <OpenEXR/half.h>
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include <cmath>
 #include <iostream>
+
+#include <OpenImageIO/half.h>
 
 #include <OpenImageIO/deepdata.h>
 #include <OpenImageIO/imagebuf.h>
@@ -249,7 +244,7 @@ ImageBufAlgo::copy(const ImageBuf& src, TypeDesc convert, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = copy(result, src, convert, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::copy() error");
+        result.errorfmt("ImageBufAlgo::copy() error");
     return result;
 }
 
@@ -303,7 +298,7 @@ ImageBufAlgo::crop(const ImageBuf& src, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = crop(result, src, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::crop() error");
+        result.errorfmt("ImageBufAlgo::crop() error");
     return result;
 }
 
@@ -312,7 +307,8 @@ ImageBufAlgo::crop(const ImageBuf& src, ROI roi, int nthreads)
 bool
 ImageBufAlgo::cut(ImageBuf& dst, const ImageBuf& src, ROI roi, int nthreads)
 {
-    pvt::LoggedTimer logtime("IBA::cut");
+    // pvt::LoggedTimer logtime("IBA::cut");
+    // Don't log, because all the work is inside crop, which already logs
     bool ok = crop(dst, src, roi, nthreads);
     if (!ok)
         return false;
@@ -334,7 +330,7 @@ ImageBufAlgo::cut(const ImageBuf& src, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = cut(result, src, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::cut() error");
+        result.errorfmt("ImageBufAlgo::cut() error");
     return result;
 }
 
@@ -393,7 +389,7 @@ ImageBufAlgo::circular_shift(const ImageBuf& src, int xshift, int yshift,
     bool ok = circular_shift(result, src, xshift, yshift, zshift, roi,
                              nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::circular_shift() error");
+        result.errorfmt("ImageBufAlgo::circular_shift() error");
     return result;
 }
 

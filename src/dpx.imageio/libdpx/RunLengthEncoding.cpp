@@ -45,7 +45,7 @@
 // Basic size of a packet is the number of bytes that all data packing methods will fit into that are whole and complete
 #define PACKET_REPEAT			(10 * sizeof(U32))					// 320 bits repeating pattern
 #define BUFFER_SIZE				(PACKET_REPEAT * 1002)				// read in temp buffer size
-#define EXPANDED_BUFFER_SIZE	(BUFFER_SIZE + (BUFFER_SIZE / 3))	// expaded size after unpacking (max)
+#define EXPANDED_BUFFER_SIZE	(BUFFER_SIZE + (BUFFER_SIZE / 3))	// expanded size after unpacking (max)
 
 
 dpx::RunLengthEncoding::RunLengthEncoding() : buf(0)
@@ -113,7 +113,7 @@ bool dpx::RunLengthEncoding::Read(const Header &dpxHeader, ElementReadStream *fd
 		U32 endOffset = 0xffffffff;
 		U32 currentOffset = startOffset;
 		
-		for (i = 0; i < MAX_ELEMENTS; i++)
+		for (i = 0; i < DPX_MAX_ELEMENTS; i++)
 		{
 			if (i == element)
 				continue;

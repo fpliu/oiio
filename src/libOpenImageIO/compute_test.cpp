@@ -1,6 +1,6 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 
 //
@@ -14,6 +14,7 @@
 
 #include <OpenImageIO/argparse.h>
 #include <OpenImageIO/benchmark.h>
+#include <OpenImageIO/fmath.h>
 #include <OpenImageIO/imagebuf.h>
 #include <OpenImageIO/imagebufalgo.h>
 #include <OpenImageIO/imagebufalgo_util.h>
@@ -43,7 +44,8 @@ static ImageBuf imgA, imgB, imgR;
 
 
 
-static void test_arrays(ROI)
+static void
+test_arrays(ROI)
 {
     const float* a = (const float*)imgA.localpixels();
     OIIO_DASSERT(a);
@@ -78,7 +80,8 @@ test_arrays_like_image(ROI roi)
 
 
 
-static void test_arrays_simd4(ROI)
+static void
+test_arrays_simd4(ROI)
 {
     const float* a = (const float*)imgA.localpixels();
     OIIO_DASSERT(a);
@@ -223,33 +226,26 @@ test_compute()
 static void
 getargs(int argc, char* argv[])
 {
-    bool help = false;
     ArgParse ap;
     // clang-format off
-    ap.options(
-        "compute_test\n" OIIO_INTRO_STRING "\n"
-        "Usage:  compute_test [options]",
-        // "%*", parse_files, "",
-        "--help", &help, "Print help message",
-        "-v", &verbose, "Verbose mode",
-        "--threads %d", &numthreads,
-            ustring::sprintf("Number of threads (default: %d)", numthreads).c_str(),
-        "--iterations %d", &iterations,
-            ustring::sprintf("Number of iterations (default: %d)", iterations).c_str(),
-        "--trials %d", &ntrials, "Number of trials",
-        "--allgpus", &allgpus, "Run OpenCL tests on all devices, not just default",
-        "--wedge", &wedge, "Do a wedge test",
-        nullptr);
+    ap.intro("compute_test\n" OIIO_INTRO_STRING)
+      .usage("compute_test [options]");
+
+    ap.arg("-v", &verbose)
+      .help("Verbose mode");
+    ap.arg("--threads %d", &numthreads)
+      .help(Strutil::fmt::format("Number of threads (default: {})", numthreads));
+    ap.arg("--iters %d", &iterations)
+      .help(Strutil::fmt::format("Number of iterations (default: {})", iterations));
+    ap.arg("--trials %d", &ntrials)
+      .help("Number of trials");
+    ap.arg("--allgpus", &allgpus)
+      .help("Run OpenCL tests on all devices, not just default");
+    ap.arg("--wedge", &wedge)
+      .help("Do a wedge test");
     // clang-format on
-    if (ap.parse(argc, (const char**)argv) < 0) {
-        std::cerr << ap.geterror() << std::endl;
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
-    if (help) {
-        ap.usage();
-        exit(EXIT_FAILURE);
-    }
+
+    ap.parse(argc, (const char**)argv);
 }
 
 
@@ -275,8 +271,10 @@ main(int argc, char* argv[])
     float green[3] = { 0, 1, 0 };
     float blue[3]  = { 0, 0, 1 };
     float black[3] = { 0, 0, 0 };
-    ImageBufAlgo::fill(imgA, red, green, red, green);
-    ImageBufAlgo::fill(imgB, blue, blue, black, black);
+    ImageBufAlgo::fill(imgA, cspan<float>(red), cspan<float>(green),
+                       cspan<float>(red), cspan<float>(green));
+    ImageBufAlgo::fill(imgB, cspan<float>(blue), cspan<float>(blue),
+                       cspan<float>(black), cspan<float>(black));
     // imgA.write ("A.exr");
     // imgB.write ("B.exr");
 

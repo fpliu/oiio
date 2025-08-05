@@ -1,16 +1,16 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 /// \file
 /// Implementation of ImageBufAlgo algorithms that do math on
 /// single pixels at a time.
 
-#include <OpenEXR/half.h>
-
 #include <cmath>
 #include <iostream>
 #include <limits>
+
+#include <OpenImageIO/half.h>
 
 #include <OpenImageIO/dassert.h>
 #include <OpenImageIO/deepdata.h>
@@ -135,7 +135,7 @@ ImageBufAlgo::add(ImageBuf& dst, Image_or_Const A_, Image_or_Const B_, ROI roi,
         return ok;
     }
     // Remaining cases: error
-    dst.errorf("ImageBufAlgo::add(): at least one argument must be an image");
+    dst.errorfmt("ImageBufAlgo::add(): at least one argument must be an image");
     return false;
 }
 
@@ -147,7 +147,7 @@ ImageBufAlgo::add(Image_or_Const A, Image_or_Const B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = add(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::add() error");
+        result.errorfmt("ImageBufAlgo::add() error");
     return result;
 }
 
@@ -228,7 +228,7 @@ ImageBufAlgo::sub(ImageBuf& dst, Image_or_Const A_, Image_or_Const B_, ROI roi,
         return ok;
     }
     // Remaining cases: error
-    dst.errorf("ImageBufAlgo::sub(): at least one argument must be an image");
+    dst.errorfmt("ImageBufAlgo::sub(): at least one argument must be an image");
     return false;
 }
 
@@ -240,7 +240,7 @@ ImageBufAlgo::sub(Image_or_Const A, Image_or_Const B, ROI roi, int nthreads)
     ImageBuf result;
     bool ok = sub(result, A, B, roi, nthreads);
     if (!ok && !result.has_error())
-        result.errorf("ImageBufAlgo::sub() error");
+        result.errorfmt("ImageBufAlgo::sub() error");
     return result;
 }
 

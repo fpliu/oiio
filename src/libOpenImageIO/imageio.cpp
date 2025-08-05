@@ -1,14 +1,15 @@
-// Copyright 2008-present Contributors to the OpenImageIO project.
-// SPDX-License-Identifier: BSD-3-Clause
-// https://github.com/OpenImageIO/oiio/blob/master/LICENSE.md
+// Copyright Contributors to the OpenImageIO project.
+// SPDX-License-Identifier: Apache-2.0
+// https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include <cstdio>
 #include <cstdlib>
 
-#include <OpenEXR/ImathFun.h>
-#include <OpenEXR/half.h>
+#include <OpenImageIO/half.h>
 
+#include <OpenImageIO/color.h>
 #include <OpenImageIO/dassert.h>
+#include <OpenImageIO/filter.h>
 #include <OpenImageIO/fmath.h>
 #include <OpenImageIO/hash.h>
 #include <OpenImageIO/imageio.h>
@@ -20,6 +21,7 @@
 #include <OpenImageIO/timer.h>
 #include <OpenImageIO/typedesc.h>
 
+#include "buildopts.h"
 #include "imageio_pvt.h"
 
 OIIO_NAMESPACE_BEGIN
@@ -27,7 +29,8 @@ OIIO_NAMESPACE_BEGIN
 static int
 threads_default()
 {
-    int n = Strutil::from_string<int>(Sysutil::getenv("OPENIMAGEIO_THREADS"));
+    int n = Strutil::from_string<int>(
+        Sysutil::getenv("OPENIMAGEIO_THREADS", Sysutil::getenv("CUE_THREADS")));
     if (n < 1)
         n = Sysutil::hardware_concurrency();
     return n;
@@ -35,26 +38,33 @@ threads_default()
 
 // Global private data
 namespace pvt {
-recursive_mutex imageio_mutex;
+std::recursive_mutex imageio_mutex;
 atomic_int oiio_threads(threads_default());
 atomic_int oiio_exr_threads(threads_default());
 atomic_int oiio_read_chunk(256);
+atomic_int oiio_try_all_readers(1);
+#ifndef OIIO_OPENEXR_CORE_DEFAULT
+#    define OIIO_OPENEXR_CORE_DEFAULT 0
+#endif
+// Should we use "Exr core C library"?
+int openexr_core(OIIO_OPENEXR_CORE_DEFAULT);
+int jpeg_com_attributes(1);
+int png_linear_premult(0);
 int tiff_half(0);
 int tiff_multithread(1);
+int dds_bc5normal(0);
+int limit_channels(1024);
+int limit_imagesize_MB(std::min(32 * 1024,
+                                int(Sysutil::physical_memory() >> 20)));
+int imageinput_strict(0);
+ustring font_searchpath(Sysutil::getenv("OPENIMAGEIO_FONTS"));
 ustring plugin_searchpath(OIIO_DEFAULT_PLUGIN_SEARCHPATH);
 std::string format_list;         // comma-separated list of all formats
 std::string input_format_list;   // comma-separated list of readable formats
-std::string output_format_list;  // comma-separated list of writeable formats
+std::string output_format_list;  // comma-separated list of writable formats
 std::string extension_list;      // list of all extensions for all formats
 std::string library_list;        // list of all libraries for all formats
-static const char* oiio_debug_env = getenv("OPENIMAGEIO_DEBUG");
-#ifdef NDEBUG
-int oiio_print_debug(oiio_debug_env ? Strutil::stoi(oiio_debug_env) : 0);
-#else
-int oiio_print_debug(oiio_debug_env ? Strutil::stoi(oiio_debug_env) : 1);
-#endif
-int oiio_log_times = Strutil::from_string<int>(
-    Sysutil::getenv("OPENIMAGEIO_LOG_TIMES"));
+int oiio_log_times = Strutil::stoi(Sysutil::getenv("OPENIMAGEIO_LOG_TIMES"));
 std::vector<float> oiio_missingcolor;
 }  // namespace pvt
 
@@ -63,9 +73,8 @@ using namespace pvt;
 
 namespace {
 // Hidden global OIIO data.
-static spin_mutex attrib_mutex;
-static const int maxthreads  = 256;  // reasonable maximum for sanity check
-static FILE* oiio_debug_file = NULL;
+static std::recursive_mutex attrib_mutex;
+static const int maxthreads = 512;  // reasonable maximum for sanity check
 
 class TimingLog {
 public:
@@ -81,18 +90,20 @@ public:
             std::cout << report();
     }
 
-    // Call like a function to record times (but only if oiio_log_times > 0)
-    void operator()(string_view key, const Timer& timer)
+    // Call like a function to record times (but only if oiio_log_times > 0).
+    // The `count` parameter is the number of times the operation was invoked,
+    // as tallied by the timer (defaulting to 1).
+    void operator()(string_view key, const Timer& timer, int count = 1)
     {
         if (oiio_log_times) {
             auto t = timer();
             spin_lock lock(mutex);
             auto entry = timing_map.find(key);
             if (entry == timing_map.end())
-                timing_map[key] = std::make_pair(t, size_t(1));
+                timing_map[key] = std::make_pair(t, size_t(count));
             else {
                 entry->second.first += t;
-                entry->second.second += 1;
+                entry->second.second += count;
             }
         }
     }
@@ -107,10 +118,9 @@ public:
             double time         = item.second.first;
             double percall      = time / ncalls;
             bool use_ms_percall = (percall < 0.1);
-            out << Strutil::sprintf("%-25s%6d %7.3fs  (avg %6.2f%s)\n",
-                                    item.first, ncalls, time,
-                                    percall * (use_ms_percall ? 1000.0 : 1.0),
-                                    use_ms_percall ? "ms" : "s");
+            print(out, "{:25s}{:6d} {:7.3f}s  (avg {:6.2f}{})\n", item.first,
+                  ncalls, time, percall * (use_ms_percall ? 1000.0 : 1.0),
+                  use_ms_percall ? "ms" : "s");
         }
         return out.str();
     }
@@ -160,7 +170,6 @@ hw_simd_caps()
     if (cpu_has_avx512dq())    caps.emplace_back ("avx512dq");
     if (cpu_has_avx512ifma())  caps.emplace_back ("avx512ifma");
     if (cpu_has_avx512pf())    caps.emplace_back ("avx512pf");
-    if (cpu_has_avx512er())    caps.emplace_back ("avx512er");
     if (cpu_has_avx512cd())    caps.emplace_back ("avx512cd");
     if (cpu_has_avx512bw())    caps.emplace_back ("avx512bw");
     if (cpu_has_avx512vl())    caps.emplace_back ("avx512vl");
@@ -192,10 +201,10 @@ oiio_simd_caps()
     if (OIIO_AVX512DQ_ENABLED)   caps.emplace_back ("avx512dq");
     if (OIIO_AVX512IFMA_ENABLED) caps.emplace_back ("avx512ifma");
     if (OIIO_AVX512PF_ENABLED)   caps.emplace_back ("avx512pf");
-    if (OIIO_AVX512ER_ENABLED)   caps.emplace_back ("avx512er");
     if (OIIO_AVX512CD_ENABLED)   caps.emplace_back ("avx512cd");
     if (OIIO_AVX512BW_ENABLED)   caps.emplace_back ("avx512bw");
     if (OIIO_AVX512VL_ENABLED)   caps.emplace_back ("avx512vl");
+    if (OIIO_SIMD_NEON)          caps.emplace_back ("neon");
     if (OIIO_FMA_ENABLED)        caps.emplace_back ("fma");
     if (OIIO_F16C_ENABLED)       caps.emplace_back ("f16c");
     // if (OIIO_POPCOUNT_ENABLED)   caps.emplace_back ("popcnt");
@@ -203,6 +212,69 @@ oiio_simd_caps()
     // clang-format on
 }
 
+
+static std::string
+oiio_build_compiler()
+{
+    using Strutil::fmt::format;
+
+    std::string comp;
+#if OIIO_INTEL_CLASSIC_COMPILER_VERSION
+    comp = format("Intel icc {}", OIIO_INTEL_CLASSIC_COMPILER_VERSION);
+#elif OIIO_INTEL_LLVM_COMPILER
+    comp = format("Intel icx {}.{}", __clang_major__, __clang_minor__);
+#elif OIIO_APPLE_CLANG_VERSION
+    comp = format("Apple clang {}.{}", __clang_major__, __clang_minor__);
+#elif OIIO_CLANG_VERSION
+    comp = format("clang {}.{}", __clang_major__, __clang_minor__);
+#elif OIIO_GNUC_VERSION
+    comp = format("gcc {}.{}", __GNUC__, __GNUC_MINOR__);
+#elif OIIO_MSVS_VERSION
+    comp = format("MSVS {}", OIIO_MSVS_VERSION);
+#else
+    comp = "unknown compiler?";
+#endif
+    return comp;
+}
+
+
+static std::string
+oiio_build_platform()
+{
+    std::string platform;
+#if defined(__linux__)
+    platform = "Linux";
+#elif defined(__APPLE__)
+    platform = "MacOS";
+#elif defined(_WIN32)
+    platform = "Windows";
+#elif defined(__MINGW32__)
+    platform = "MinGW";
+#elif defined(__FreeBSD__)
+    platform = "FreeBSD";
+#else
+    platform = "UnknownOS";
+#endif
+    platform += "/";
+#if defined(__x86_64__)
+    platform += "x86_64";
+#elif defined(__i386__)
+    platform += "i386";
+#elif defined(_M_ARM64) || defined(__aarch64__) || defined(__aarch64)
+    platform += "ARM";
+#else
+    platform = "unknown arch?";
+#endif
+    return platform;
+}
+
+
+
+void
+shutdown()
+{
+    default_thread_pool_shutdown();
+}
 
 
 int
@@ -213,25 +285,26 @@ openimageio_version()
 
 
 
-// To avoid thread oddities, we have the storage area buffering error
-// messages for seterror()/geterror() be thread-specific.
-static thread_local std::string error_msg;
-
-
 void
-pvt::seterror(string_view message)
+pvt::append_error(string_view message)
 {
-    error_msg = message;
+    Strutil::pvt::append_error(message);
+}
+
+
+
+bool
+has_error()
+{
+    return Strutil::pvt::has_error();
 }
 
 
 
 std::string
-geterror()
+geterror(bool clear)
 {
-    std::string e = error_msg;
-    error_msg.clear();
-    return e;
+    return Strutil::pvt::geterror(clear);
 }
 
 
@@ -239,26 +312,30 @@ geterror()
 void
 debug(string_view message)
 {
-    recursive_lock_guard lock(pvt::imageio_mutex);
-    if (oiio_print_debug) {
-        if (!oiio_debug_file) {
-            const char* filename = getenv("OPENIMAGEIO_DEBUG_FILE");
-            oiio_debug_file = filename && filename[0] ? fopen(filename, "a")
-                                                      : stderr;
-            OIIO_ASSERT(oiio_debug_file);
-            if (!oiio_debug_file)
-                return;
-        }
-        Strutil::fprintf(oiio_debug_file, "OIIO DEBUG: %s", message);
-    }
+    Strutil::pvt::debug(message);
 }
 
 
 
 void
-pvt::log_time(string_view key, const Timer& timer)
+log_time(string_view key, const Timer& timer, int count)
 {
-    timing_log(key, timer);
+    timing_log(key, timer, count);
+}
+
+
+
+bool
+attribute(string_view name, TypeDesc type, cspan<std::byte> value)
+{
+    if (value.size_bytes() != type.size()) {
+        OIIO::errorfmt(
+            "OIIO::attribute given a {}-byte span as data for a {}-byte attribute {} {}",
+            value.size(), type.size(), type, name);
+        OIIO_DASSERT(value.size_bytes() == type.size());
+        return false;
+    }
+    return attribute(name, type, value.data());
 }
 
 
@@ -271,16 +348,26 @@ attribute(string_view name, TypeDesc type, const void* val)
         return optparser(gos, *(const char**)val);
     }
     if (name == "threads" && type == TypeInt) {
-        int ot = Imath::clamp(*(const int*)val, 0, maxthreads);
+        int ot = OIIO::clamp(*(const int*)val, 0, maxthreads);
         if (ot == 0)
             ot = threads_default();
         oiio_threads = ot;
         default_thread_pool()->resize(ot - 1);
         return true;
     }
-    spin_lock lock(attrib_mutex);
+    if (Strutil::starts_with(name, "gpu:")
+        || Strutil::starts_with(name, "cuda:")) {
+        return pvt::gpu_attribute(name, type, val);
+    }
+
+    // Things below here need to buarded by the attrib_mutex
+    std::lock_guard lock(attrib_mutex);
     if (name == "read_chunk" && type == TypeInt) {
         oiio_read_chunk = *(const int*)val;
+        return true;
+    }
+    if (name == "font_searchpath" && type == TypeString) {
+        font_searchpath = ustring(*(const char**)val);
         return true;
     }
     if (name == "plugin_searchpath" && type == TypeString) {
@@ -288,7 +375,19 @@ attribute(string_view name, TypeDesc type, const void* val)
         return true;
     }
     if (name == "exr_threads" && type == TypeInt) {
-        oiio_exr_threads = Imath::clamp(*(const int*)val, -1, maxthreads);
+        oiio_exr_threads = OIIO::clamp(*(const int*)val, -1, maxthreads);
+        return true;
+    }
+    if (name == "openexr:core" && type == TypeInt) {
+        openexr_core = *(const int*)val;
+        return true;
+    }
+    if (name == "jpeg:com_attributes" && type == TypeInt) {
+        jpeg_com_attributes = *(const int*)val;
+        return true;
+    }
+    if (name == "png:linear_premult" && type == TypeInt) {
+        png_linear_premult = *(const int*)val;
         return true;
     }
     if (name == "tiff:half" && type == TypeInt) {
@@ -297,6 +396,38 @@ attribute(string_view name, TypeDesc type, const void* val)
     }
     if (name == "tiff:multithread" && type == TypeInt) {
         tiff_multithread = *(const int*)val;
+        return true;
+    }
+    if (name == "dds:bc5normal" && type == TypeInt) {
+        dds_bc5normal = *(const int*)val;
+        return true;
+    }
+    if (name == "limits:channels" && type == TypeInt) {
+        limit_channels = *(const int*)val;
+        return true;
+    }
+    if (name == "limits:imagesize_MB" && type == TypeInt) {
+        limit_imagesize_MB = *(const int*)val;
+        return true;
+    }
+    if (name == "oiio:print_uncaught_errors" && type == TypeInt) {
+        oiio_print_uncaught_errors = *(const int*)val;
+        return true;
+    }
+    if (name == "imagebuf:print_uncaught_errors" && type == TypeInt) {
+        imagebuf_print_uncaught_errors = *(const int*)val;
+        return true;
+    }
+    if (name == "imagebuf:use_imagecache" && type == TypeInt) {
+        imagebuf_use_imagecache = *(const int*)val;
+        return true;
+    }
+    if (name == "imageinput:strict" && type == TypeInt) {
+        imageinput_strict = *(const int*)val;
+        return true;
+    }
+    if (name == "use_tbb" && type == TypeInt) {
+        oiio_use_tbb = *(const int*)val;
         return true;
     }
     if (name == "debug" && type == TypeInt) {
@@ -309,17 +440,18 @@ attribute(string_view name, TypeDesc type, const void* val)
     }
     if (name == "missingcolor" && type.basetype == TypeDesc::FLOAT) {
         // missingcolor as float array
-        oiio_missingcolor.clear();
-        oiio_missingcolor.reserve(type.basevalues());
-        int n = type.basevalues();
-        for (int i = 0; i < n; ++i)
-            oiio_missingcolor[i] = ((const float*)val)[i];
+        oiio_missingcolor.assign((const float*)val,
+                                 (const float*)val + type.numelements());
         return true;
     }
     if (name == "missingcolor" && type == TypeString) {
         // missingcolor as string
         oiio_missingcolor = Strutil::extract_from_list_string<float>(
             *(const char**)val);
+        return true;
+    }
+    if (name == "try_all_readers" && type == TypeInt) {
+        oiio_try_all_readers = *(const int*)val;
         return true;
     }
 
@@ -329,15 +461,45 @@ attribute(string_view name, TypeDesc type, const void* val)
 
 
 bool
+getattribute(string_view name, TypeDesc type, span<std::byte> value)
+{
+    if (value.size_bytes() != type.size()) {
+        OIIO::errorfmt(
+            "OIIO::getattribute given a {}-byte span as data for a {}-byte attribute {} {}",
+            value.size(), type.size(), type, name);
+        OIIO_DASSERT(value.size_bytes() == type.size());
+        return false;
+    }
+    return getattribute(name, type, value.data());
+}
+
+
+
+bool
 getattribute(string_view name, TypeDesc type, void* val)
 {
+    using Strutil::fmt::format;
     if (name == "threads" && type == TypeInt) {
         *(int*)val = oiio_threads;
         return true;
     }
-    spin_lock lock(attrib_mutex);
+    if (name == "version" && type == TypeString) {
+        *(ustring*)val = ustring(OIIO_VERSION_STRING);
+        return true;
+    }
+    if (Strutil::starts_with(name, "gpu:")
+        || Strutil::starts_with(name, "cuda:")) {
+        return pvt::gpu_getattribute(name, type, val);
+    }
+
+    // Things below here need to buarded by the attrib_mutex
+    std::lock_guard lock(attrib_mutex);
     if (name == "read_chunk" && type == TypeInt) {
         *(int*)val = oiio_read_chunk;
+        return true;
+    }
+    if (name == "font_searchpath" && type == TypeString) {
+        *(ustring*)val = font_searchpath;
         return true;
     }
     if (name == "plugin_searchpath" && type == TypeString) {
@@ -374,16 +536,96 @@ getattribute(string_view name, TypeDesc type, void* val)
         *(ustring*)val = ustring(library_list);
         return true;
     }
+    if (name == "font_dir_list" && type == TypeString) {
+        *(ustring*)val = ustring(Strutil::join(font_dirs(), ";"));
+        return true;
+    }
+    if (name == "font_file_list" && type == TypeString) {
+        *(ustring*)val = ustring(Strutil::join(font_file_list(), ";"));
+        return true;
+    }
+    if (name == "font_list" && type == TypeString) {
+        *(ustring*)val = ustring(Strutil::join(font_list(), ";"));
+        return true;
+    }
+    if (name == "font_family_list" && type == TypeString) {
+        *(ustring*)val = ustring(Strutil::join(font_family_list(), ";"));
+        return true;
+    }
+    if (Strutil::starts_with(name, "font_style_list:") && type == TypeString) {
+        string_view family = name.substr(strlen("font_style_list:"));
+        *(ustring*)val = ustring(Strutil::join(font_style_list(family), ";"));
+        return true;
+    }
+    if (Strutil::starts_with(name, "font_filename:") && type == TypeString) {
+        std::vector<string_view> tokens;
+        Strutil::split(name, tokens, ":");
+        string_view family = tokens.size() >= 1 ? tokens[1] : string_view();
+        string_view style  = tokens.size() >= 2 ? tokens[2] : string_view();
+        *(ustring*)val     = ustring(font_filename(family, style));
+        return true;
+    }
+    if (name == "filter_list" && type == TypeString) {
+        std::vector<string_view> filternames;
+        for (int i = 0, e = Filter2D::num_filters(); i < e; ++i)
+            filternames.emplace_back(Filter2D::get_filterdesc(i).name);
+        *(ustring*)val = ustring(Strutil::join(filternames, ";"));
+        return true;
+    }
     if (name == "exr_threads" && type == TypeInt) {
         *(int*)val = oiio_exr_threads;
+        return true;
+    }
+    if (name == "openexr:core" && type == TypeInt) {
+        *(int*)val = openexr_core;
+        return true;
+    }
+    if (name == "jpeg:com_attributes" && type == TypeInt) {
+        *(int*)val = jpeg_com_attributes;
+        return true;
+    }
+    if (name == "png:linear_premult" && type == TypeInt) {
+        *(int*)val = png_linear_premult;
         return true;
     }
     if (name == "tiff:half" && type == TypeInt) {
         *(int*)val = tiff_half;
         return true;
     }
+    if (name == "limits:channels" && type == TypeInt) {
+        *(int*)val = limit_channels;
+        return true;
+    }
+    if (name == "limits:imagesize_MB" && type == TypeInt) {
+        *(int*)val = limit_imagesize_MB;
+        return true;
+    }
     if (name == "tiff:multithread" && type == TypeInt) {
         *(int*)val = tiff_multithread;
+        return true;
+    }
+    if (name == "dds:bc5normal" && type == TypeInt) {
+        *(int*)val = dds_bc5normal;
+        return true;
+    }
+    if (name == "oiio:print_uncaught_errors" && type == TypeInt) {
+        *(int*)val = oiio_print_uncaught_errors;
+        return true;
+    }
+    if (name == "imagebuf:print_uncaught_errors" && type == TypeInt) {
+        *(int*)val = imagebuf_print_uncaught_errors;
+        return true;
+    }
+    if (name == "imagebuf:use_imagecache" && type == TypeInt) {
+        *(int*)val = imagebuf_use_imagecache;
+        return true;
+    }
+    if (name == "imageinput:strict" && type == TypeInt) {
+        *(int*)val = imageinput_strict;
+        return true;
+    }
+    if (name == "use_tbb" && type == TypeInt) {
+        *(int*)val = oiio_use_tbb;
         return true;
     }
     if (name == "debug" && type == TypeInt) {
@@ -402,12 +644,28 @@ getattribute(string_view name, TypeDesc type, void* val)
         *(ustring*)val = ustring(hw_simd_caps());
         return true;
     }
-    if (name == "oiio:simd" && type == TypeString) {
+    if ((name == "build:simd" || name == "oiio:simd") && type == TypeString) {
         *(ustring*)val = ustring(oiio_simd_caps());
+        return true;
+    }
+    if (name == "build:compiler" && type == TypeString) {
+        *(ustring*)val = ustring(oiio_build_compiler());
+        return true;
+    }
+    if (name == "build:platform" && type == TypeString) {
+        *(ustring*)val = ustring(oiio_build_platform());
+        return true;
+    }
+    if (name == "build:dependencies" && type == TypeString) {
+        *(ustring*)val = ustring(OIIO_ALL_BUILD_DEPS_FOUND);
         return true;
     }
     if (name == "resident_memory_used_MB" && type == TypeInt) {
         *(int*)val = int(Sysutil::memory_used(true) >> 20);
+        return true;
+    }
+    if (name == "resident_memory_used_MB" && type == TypeFloat) {
+        *(float*)val = float(Sysutil::memory_used(true) >> 20);
         return true;
     }
     if (name == "missingcolor" && type.basetype == TypeDesc::FLOAT
@@ -426,16 +684,36 @@ getattribute(string_view name, TypeDesc type, void* val)
         *(ustring*)val = ustring(Strutil::join(oiio_missingcolor, ","));
         return true;
     }
+    if (name == "try_all_readers" && type == TypeInt) {
+        *(int*)val = oiio_try_all_readers;
+        return true;
+    }
+    if (name == "opencolorio_version" && type == TypeString) {
+        int v          = ColorConfig::OpenColorIO_version_hex();
+        *(ustring*)val = ustring::fmtformat("{}.{}.{}", v >> 24,
+                                            (v >> 16) & 0xff, (v >> 8) & 0xff);
+        return true;
+    }
+    if (name == "IB_local_mem_current" && type == TypeInt64) {
+        *(long long*)val = IB_local_mem_current;
+        return true;
+    }
+    if (name == "IB_local_mem_peak" && type == TypeInt64) {
+        *(long long*)val = IB_local_mem_peak;
+        return true;
+    }
+    if (name == "IB_total_open_time" && type == TypeFloat) {
+        *(float*)val = IB_total_open_time;
+        return true;
+    }
+    if (name == "IB_total_image_read_time" && type == TypeFloat) {
+        *(float*)val = IB_total_image_read_time;
+        return true;
+    }
     return false;
 }
 
 
-inline long long
-quantize(float value, long long quant_min, long long quant_max)
-{
-    value = value * quant_max;
-    return Imath::clamp((long long)(value + 0.5f), quant_min, quant_max);
-}
 
 namespace {
 
@@ -487,11 +765,37 @@ _contiguize(const T* src, int nchannels, stride_t xstride, stride_t ystride,
 
 }  // namespace
 
+
+
+span<const std::byte>
+pvt::contiguize(const image_span<const std::byte>& src, span<std::byte> dst)
+{
+    // Contiguized result must fit in dst
+    OIIO_DASSERT(src.size_bytes() <= dst.size_bytes());
+
+    if (src.is_contiguous()) {
+        // Already contiguous -- don't copy, just return a span representation
+        // of the place it already lives in src.
+        return make_cspan(src.data(), src.size_bytes());
+    } else {
+        // Non-contiguous -- rely on copy_image() to do the heavy lifting.
+        image_span dstspan(dst.data(), src.nchannels(), src.width(),
+                           src.height(), src.depth(), AutoStride, AutoStride,
+                           AutoStride, AutoStride, src.chansize());
+        OIIO_DASSERT(dstspan.size_bytes() == src.size_bytes());
+        copy_image(dstspan, src);
+        return make_cspan(dst.data(), src.size_bytes());
+    }
+}
+
+
+
 const void*
 pvt::contiguize(const void* src, int nchannels, stride_t xstride,
                 stride_t ystride, stride_t zstride, void* dst, int width,
                 int height, int depth, TypeDesc format)
 {
+    OIIO_DASSERT(nchannels >= 0 && width >= 0 && height >= 0 && depth >= 0);
     switch (format.basetype) {
     case TypeDesc::FLOAT:
         return _contiguize((const float*)src, nchannels, xstride, ystride,
@@ -556,57 +860,35 @@ pvt::convert_to_float(const void* src, float* dst, int nvals, TypeDesc format)
 
 
 
-template<typename T>
-static const void*
-_from_float(const float* src, T* dst, size_t nvals)
-{
-    if (!src) {
-        // If no source pixels, assume zeroes
-        T z = T(0);
-        for (size_t p = 0; p < nvals; ++p)
-            dst[p] = z;
-    } else if (std::numeric_limits<T>::is_integer) {
-        long long quant_min = (long long)std::numeric_limits<T>::min();
-        long long quant_max = (long long)std::numeric_limits<T>::max();
-        // Convert float to non-float native format, with quantization
-        for (size_t p = 0; p < nvals; ++p)
-            dst[p] = (T)quantize(src[p], quant_min, quant_max);
-    } else {
-        // It's a floating-point type of some kind -- we don't apply
-        // quantization
-        if (sizeof(T) == sizeof(float)) {
-            // It's already float -- return the source itself
-            return src;
-        }
-        // Otherwise, it's converting between two fp types
-        for (size_t p = 0; p < nvals; ++p)
-            dst[p] = (T)src[p];
-    }
-
-    return dst;
-}
-
-
-
 const void*
 pvt::convert_from_float(const float* src, void* dst, size_t nvals,
                         TypeDesc format)
 {
-    switch (format.basetype) {
-    case TypeDesc::FLOAT: return src;
-    case TypeDesc::HALF: return _from_float<half>(src, (half*)dst, nvals);
-    case TypeDesc::DOUBLE: return _from_float(src, (double*)dst, nvals);
-    case TypeDesc::INT8: return _from_float(src, (char*)dst, nvals);
-    case TypeDesc::UINT8: return _from_float(src, (unsigned char*)dst, nvals);
-    case TypeDesc::INT16: return _from_float(src, (short*)dst, nvals);
-    case TypeDesc::UINT16: return _from_float(src, (unsigned short*)dst, nvals);
-    case TypeDesc::INT: return _from_float(src, (int*)dst, nvals);
-    case TypeDesc::UINT: return _from_float(src, (unsigned int*)dst, nvals);
-    case TypeDesc::INT64: return _from_float(src, (long long*)dst, nvals);
-    case TypeDesc::UINT64:
-        return _from_float(src, (unsigned long long*)dst, nvals);
-    default: OIIO_ASSERT(0 && "ERROR from_float: bad format"); return NULL;
+    // If no source pixels, assume zeroes
+    if (!src) {
+        memset(dst, 0, nvals * format.size());
+        return dst;
     }
+
+    // clang-format off
+    switch (format.basetype) {
+    case TypeDesc::FLOAT:
+        // If it's already float, return the source itself
+        return src;
+    case TypeDesc::HALF:   convert_type(src, (half*)    dst, nvals); break;
+    case TypeDesc::UINT8:  convert_type(src, (uint8_t*) dst, nvals); break;
+    case TypeDesc::UINT16: convert_type(src, (uint16_t*)dst, nvals); break;
+    case TypeDesc::UINT:   convert_type(src, (uint32_t*)dst, nvals); break;
+    case TypeDesc::INT8:   convert_type(src, (int8_t*)  dst, nvals); break;
+    case TypeDesc::INT16:  convert_type(src, (int16_t*) dst, nvals); break;
+    case TypeDesc::INT:    convert_type(src, (int32_t*) dst, nvals); break;
+    case TypeDesc::DOUBLE: convert_type(src, (double*)  dst, nvals); break;
+    case TypeDesc::INT64:  convert_type(src, (int64_t*) dst, nvals); break;
+    case TypeDesc::UINT64: convert_type(src, (uint64_t*)dst, nvals); break;
+    default: OIIO_ASSERT(0 && "ERROR from_float: bad format"); dst = nullptr;
+    }
+    // clang-format on
+    return dst;
 }
 
 
@@ -752,14 +1034,13 @@ parallel_convert_image(int nchannels, int width, int height, int depth,
                            nchannels, width, height);
 
     int blocksize = std::max(1, height / nthreads);
-    parallel_for_chunked(
-        0, height, blocksize, [=](int /*id*/, int64_t ybegin, int64_t yend) {
-            convert_image(nchannels, width, yend - ybegin, depth,
-                          (const char*)src + src_ystride * ybegin, src_type,
-                          src_xstride, src_ystride, src_zstride,
-                          (char*)dst + dst_ystride * ybegin, dst_type,
-                          dst_xstride, dst_ystride, dst_zstride);
-        });
+    parallel_for_chunked(0, height, blocksize, [=](int64_t ybegin, int64_t yend) {
+        convert_image(nchannels, width, yend - ybegin, depth,
+                      (const char*)src + src_ystride * ybegin, src_type,
+                      src_xstride, src_ystride, src_zstride,
+                      (char*)dst + dst_ystride * ybegin, dst_type, dst_xstride,
+                      dst_ystride, dst_zstride);
+    });
     return true;
 }
 
@@ -804,12 +1085,125 @@ copy_image(int nchannels, int width, int height, int depth, const void* src,
 
 
 
+template<typename T>
 void
-add_dither(int nchannels, int width, int height, int depth, float* data,
-           stride_t xstride, stride_t ystride, stride_t zstride,
-           float ditheramplitude, int alpha_channel, int z_channel,
-           unsigned int ditherseed, int chorigin, int xorigin, int yorigin,
-           int zorigin)
+aligned_copy_image(const image_span<std::byte>& dst,
+                   const image_span<const std::byte>& src)
+{
+    size_t systride  = src.ystride();
+    size_t dystride  = dst.ystride();
+    size_t chunksize = src.chansize() * src.nchannels();
+    size_t nT        = chunksize / sizeof(T);
+    size_t sstrideT  = src.xstride() / sizeof(T);
+    size_t dstrideT  = dst.xstride() / sizeof(T);
+    for (uint32_t z = 0; z < src.depth(); ++z) {
+        std::byte* dscanline       = dst.getptr(0, 0, 0, z);
+        const std::byte* sscanline = src.getptr(0, 0, 0, z);
+        for (uint32_t y = 0; y < src.height(); ++y) {
+            auto dscanlineT = reinterpret_cast<T*>(dscanline);
+            auto sscanlineT = reinterpret_cast<const T*>(sscanline);
+            for (uint32_t x = 0; x < src.width(); ++x) {
+                for (size_t c = 0; c < nT; ++c) {
+                    dscanlineT[x * dstrideT + c] = sscanlineT[x * sstrideT + c];
+                }
+            }
+            sscanline += systride;
+            dscanline += dystride;
+        }
+    }
+}
+
+
+
+bool
+copy_image(const image_span<std::byte>& dst,
+           const image_span<const std::byte>& src)
+{
+    OIIO_DASSERT(src.width() == dst.width() && src.height() == dst.height()
+                 && src.depth() == dst.depth()
+                 && src.nchannels() == dst.nchannels()
+                 && src.chansize() == dst.chansize());
+    if (src.is_contiguous() && dst.is_contiguous()) {
+        // Whole image is contiguous -- just do it in one memcpy
+        memcpy(dst.data(), src.data(), src.size_bytes());
+        return true;
+    }
+    if (src.is_contiguous_scanline() && dst.is_contiguous_scanline()) {
+        // Scanlines are contiguous -- do one memcpy per scanline
+        size_t chunksize = src.chansize() * src.nchannels()
+                           * size_t(src.width());
+        for (uint32_t z = 0; z < src.depth(); ++z) {
+            for (uint32_t y = 0; y < src.height(); ++y) {
+                std::byte* d       = dst.getptr(0, 0, y, z);
+                const std::byte* s = src.getptr(0, 0, y, z);
+                memcpy(d, s, chunksize);
+            }
+        }
+        return true;
+    }
+    if (dst.is_contiguous_pixel()) {
+        size_t systride = src.ystride();
+        size_t dystride = dst.ystride();
+        // Pixels are contiguous -- do one memcpy per pixel
+        size_t chunksize = src.chansize() * src.nchannels();
+#if 1
+        // Speedup trick: if we 'or' all the pointers and strides and the
+        // result is a multiple of 4, we can copy 4 bytes at a time.
+        size_t mashed = (chunksize | uintptr_t(src.data())
+                         | uintptr_t(dst.data()) | src.xstride() | src.ystride()
+                         | src.zstride());
+        if ((mashed & 3) == 0) {
+            aligned_copy_image<uint32_t>(dst, src);
+            return true;
+        }
+        if ((mashed & 1) == 0) {
+            aligned_copy_image<uint16_t>(dst, src);
+            return true;
+        }
+#endif
+        for (uint32_t z = 0; z < src.depth(); ++z) {
+            std::byte* dscanline       = dst.getptr(0, 0, 0, z);
+            const std::byte* sscanline = src.getptr(0, 0, 0, z);
+            for (uint32_t y = 0; y < src.height(); ++y) {
+                for (uint32_t x = 0; x < src.width(); ++x) {
+                    memcpy(dscanline + x * dst.xstride(),
+                           sscanline + x * src.xstride(), chunksize);
+                }
+                sscanline += systride;
+                dscanline += dystride;
+            }
+        }
+        return true;
+    }
+    // General case -- have to do item by item copy.
+    // FIXME: is there advantage to doing copies individually rather
+    // then with memcpy?
+    size_t chunksize = src.chansize();
+    for (uint32_t z = 0; z < src.depth(); ++z) {
+        for (uint32_t y = 0; y < src.height(); ++y) {
+            std::byte* dscanline       = dst.getptr(0, 0, y, z);
+            const std::byte* sscanline = src.getptr(0, 0, y, z);
+            for (uint32_t x = 0; x < src.width(); ++x) {
+                std::byte* dpel       = dscanline + x * dst.xstride();
+                const std::byte* spel = sscanline + x * src.xstride();
+                for (uint32_t c = 0; x < src.nchannels(); ++c) {
+                    memcpy(dpel + c * dst.chanstride(),
+                           spel + c * src.chanstride(), chunksize);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+
+
+void
+add_bluenoise(int nchannels, int width, int height, int depth, float* data,
+              stride_t xstride, stride_t ystride, stride_t zstride,
+              float ditheramplitude, int alpha_channel, int z_channel,
+              unsigned int ditherseed, int chorigin, int xorigin, int yorigin,
+              int zorigin)
 {
     ImageSpec::auto_stride(xstride, ystride, zstride, sizeof(float), nchannels,
                            width, height);
@@ -818,23 +1212,35 @@ add_dither(int nchannels, int width, int height, int depth, float* data,
         char* scanline = plane;
         for (int y = 0; y < height; ++y, scanline += ystride) {
             char* pixel = scanline;
-            uint32_t ba = (z + zorigin) * 1311 + yorigin + y;
-            uint32_t bb = ditherseed + (chorigin << 24);
-            uint32_t bc = xorigin;
             for (int x = 0; x < width; ++x, pixel += xstride) {
                 float* val = (float*)pixel;
-                for (int c = 0; c < nchannels; ++c, ++val, ++bc) {
-                    bjhash::bjmix(ba, bb, bc);
+                for (int c = 0; c < nchannels; ++c, ++val) {
                     int channel = c + chorigin;
                     if (channel == alpha_channel || channel == z_channel)
                         continue;
                     float dither
-                        = bc / float(std::numeric_limits<uint32_t>::max());
+                        = pvt::bluenoise_4chan_ptr(x + xorigin, y + yorigin,
+                                                   z + zorigin, channel & (~3),
+                                                   ditherseed)[channel & 3];
                     *val += ditheramplitude * (dither - 0.5f);
                 }
             }
         }
     }
+}
+
+
+
+void
+add_dither(int nchannels, int width, int height, int depth, float* data,
+           stride_t xstride, stride_t ystride, stride_t zstride,
+           float ditheramplitude, int alpha_channel, int z_channel,
+           unsigned int ditherseed, int chorigin, int xorigin, int yorigin,
+           int zorigin)
+{
+    add_bluenoise(nchannels, width, height, depth, data, xstride, ystride,
+                  zstride, ditheramplitude, alpha_channel, z_channel,
+                  ditherseed, chorigin, xorigin, yorigin, zorigin);
 }
 
 
@@ -981,6 +1387,47 @@ wrap_mirror(int& coord, int origin, int width)
                      "width=%d, origin=%d, result=%d", width, origin, coord);
     coord += origin;
     return true;
+}
+
+
+
+/// Verify that the image_span has all its contents lying within the
+/// contiguous span.
+bool
+image_span_within_span(const image_span<const std::byte>& ispan,
+                       span<const std::byte> contiguous) noexcept
+{
+    // Start with first,last being the first byte of pixel 0, channel 0
+    const std::byte* first = ispan.data();  // first byte of ispan
+    const std::byte* last  = ispan.data();  // last byte of ispan
+    // Extend them to the start of the first pixel of the first and last image
+    // plane.
+    if (ispan.zstride() > 0)
+        last += ispan.zstride() * (ispan.depth() - 1);
+    else
+        first += ispan.zstride() * (ispan.depth() - 1);  // neg stride
+    // Extend them to the start of the first pixel of the first and last
+    // scanline of the first and last image plane.
+    if (ispan.ystride() > 0)
+        last += ispan.ystride() * (ispan.height() - 1);
+    else
+        first += ispan.ystride() * (ispan.height() - 1);  // neg stride
+    // Extend them to the start of the first pixel of the first and last
+    // column of the first and last scanline of the first and last image
+    // plane.
+    if (ispan.xstride() > 0)
+        last += ispan.xstride() * (ispan.width() - 1);
+    else
+        first += ispan.xstride() * (ispan.width() - 1);  // neg stride
+    // Make sure they cover the whole of those extreme pixels
+    if (ispan.chanstride() > 0)
+        last += ispan.chanstride() * (ispan.nchannels() - 1);
+    else
+        first += ispan.chanstride() * (ispan.nchannels() - 1);  // neg stride
+    // Make sure last covers the whole data type
+    last += ispan.chansize() - 1;
+    return (first >= contiguous.data()
+            && last < contiguous.data() + contiguous.size());
 }
 
 
